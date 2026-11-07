@@ -1,5 +1,9 @@
 """Body model: learns how the arm moves (handbook 2H).
 
+Everything here is in FINGERTIP coordinates: each camera reading of the claw
+marker is converted to where the fingertips are (perception.claw_tip), so a
+claw that is a little tilted still lands its fingers on the target.
+
 1. babble(): random walk over J0-J3 while the camera records the claw marker.
 2. train(): small neural net, pulses -> marker x, y, z, down-ness.
 3. BodyModel.solve(): gradient search through the net for the pulses that
@@ -17,14 +21,15 @@ import torch
 from torch import nn
 
 from . import config as C
+from .perception import claw_tip
 
 torch.set_num_threads(1)
 
 
 # ===================================================================== reading the claw
-def read_claw(source, n=5, timeout=1.5):
+def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0):
     """Average n claw readings from an observation source (sim world or real vision).
-    Returns {x, y, z, down} or None if the marker was not seen."""
+    Returns the fingertip {x, y, z, down} or None if the marker was not seen."""
     got = []
     clock = getattr(source, "clock", None)
     t_end = (clock.time() if clock else time.monotonic()) + timeout
@@ -44,7 +49,8 @@ def read_claw(source, n=5, timeout=1.5):
         got.append(obs.claw)
     if len(got) < max(2, n // 2):
         return None
-    return {k: float(np.mean([g[k] for g in got])) for k in ("x", "y", "z", "down")}
+    avg = {k: float(np.mean([g.get(k, 0.0) for g in got])) for k in ("x", "y", "z", "nx", "ny", "down")}
+    return claw_tip(avg, marker_to_fingertip)
 
 
 # ===================================================================== babbling
@@ -78,7 +84,7 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
             cur[4], cur[5] = 1500, cfg["claw_open"]
             arm.move(cur)
             clock.sleep(cfg["babble_settle"])
-            m = read_claw(source, 5)
+            m = read_claw(source, 5, marker_to_fingertip=cfg["marker_to_fingertip"])
             if m is None:
                 unseen += 1
                 last_z = None

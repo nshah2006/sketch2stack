@@ -22,7 +22,7 @@ import time
 from . import config as C
 from .catalog import block_yaw_from_long_axis, fold180
 from .motion import Motion
-from .perception import BlockTracker, classify
+from .perception import BlockTracker, classify, claw_tip
 from .planner import plan as make_plan
 
 LED = {"idle": 0, "building": 1, "waiting": 2, "done": 3, "stopped": 4}
@@ -175,7 +175,8 @@ class Builder:
             if got < 2:
                 return None
             recent = list(self.claw_hist)[-got:]
-        return {k: sum(c[k] for c in recent) / len(recent) for k in ("x", "y", "z", "down")}
+        avg = {k: sum(c.get(k, 0.0) for c in recent) / len(recent) for k in ("x", "y", "z", "nx", "ny", "down")}
+        return claw_tip(avg, self.cfg["marker_to_fingertip"])
 
     def wait_resume(self):
         """Called by motion while the safety stop is active."""
@@ -253,7 +254,27 @@ class Builder:
             self.set_mode("done" if result == "done" else "idle", f"build {result}")
             self.log(f"build {result}")
 
+    def _at_pickup(self, st, exclude=()):
+        """Colorless mode: whatever block sits on the pickup spot is the one we asked for."""
+        px, py = self.cfg["layout"]["pickup"]
+        for b in self.active_blocks():
+            if b["id"] in exclude or math.hypot(b["x"] - px, b["y"] - py) > 3.0:
+                continue
+            b = dict(b)
+            b["type"], b["color"] = st["type"], st["color"]
+            b["z"] = 0.0
+            b["yaw"] = block_yaw_from_long_axis(b.get("angle", 0.0), st["type"], self.catalog)
+            if b.get("size"):
+                fp = sorted(self.catalog.size(st["type"])[:2], reverse=True)
+                if abs(b["size"][0] - fp[0]) > 1.5 or abs(b["size"][1] - fp[1]) > 1.5:
+                    self.log(f"block on the pickup spot measures {b['size'][0]:.1f} x {b['size'][1]:.1f} cm; "
+                             f"expected about {fp[0]:.0f} x {fp[1]:.0f}")
+            return b
+        return None
+
     def _find_supply(self, st, exclude=()):
+        if not self.cfg["use_color"]:
+            return self._at_pickup(st, exclude)
         best = None
         for b in self.active_blocks():
             if b.get("type") != st["type"] or b["color"] != st["color"] or b["id"] in exclude:
@@ -277,9 +298,21 @@ class Builder:
                              for z in (self.cfg.grasp_z(z0, h), self.cfg.hover_z(z0, h)))
         return cache[key]
 
+    def _hand_clear(self, b, radius=15.0, still=1.0):
+        """No hand near the block, and the block has sat still for `still` seconds."""
+        now = self.obs.t if self.obs is not None else self.clock.time()
+        if any(math.hypot(h["x"] - b["x"], h["y"] - b["y"]) < radius for h in self.hands):
+            self._hand_seen_t = now
+            return False
+        if now - getattr(self, "_hand_seen_t", -99) < still:
+            return False
+        return now - b.get("first_seen", now) >= still
+
     def _wait_for_block(self, st):
         """Ask for a block (sim person, or a prompt in the UI) and wait for it."""
-        msg = f"Place a {st['color']} {self.catalog.types[st['type']]['name'].lower()} in a supply zone"
+        name = self.catalog.types[st['type']]['name'].lower()
+        msg = (f"Place a {st['color']} {name} in a supply zone" if self.cfg["use_color"]
+               else f"Place a {name} on the pickup spot")
         with self.lock:
             self.status["prompt"] = msg
         self.set_mode("waiting", msg)
@@ -292,10 +325,10 @@ class Builder:
         t0 = self.clock.time()
         while not self.cancel.is_set():
             b = self._find_supply(st)
-            if b is not None:
+            if b is not None and self._hand_clear(b):
                 self.clock.sleep(1.0)                 # let the hand clear first
                 b = self._find_supply(st)
-                if b is not None and not self.safety_stopped:
+                if b is not None and not self.safety_stopped and self._hand_clear(b):
                     with self.lock:
                         self.status["prompt"] = None
                     self.set_mode("building")
@@ -310,7 +343,10 @@ class Builder:
         for attempt in range(3):
             if self.cancel.is_set():
                 return "cancel"
-            blk = self._find_supply(st, tried) or self._wait_for_block(st)
+            blk = self._find_supply(st, tried)
+            if blk is not None and not self._hand_clear(blk):
+                blk = None
+            blk = blk or self._wait_for_block(st)
             if blk is None:
                 return "cancel" if self.cancel.is_set() else "fail"
             yaw = blk.get("yaw", 0.0)
@@ -325,7 +361,8 @@ class Builder:
                 return "cancel"
             if r != "ok":
                 self.log(f"pick {r}; retrying")
-                tried.add(blk["id"])
+                if self.cfg["use_color"]:
+                    tried.add(blk["id"])      # try another block; on the pickup spot, retry the same one
                 continue
             self.action(f"step {i + 1}: placing" + (f" on top, {st['z']:.1f} cm up" if st["z"] > 0 else ""))
             r = self.motion.place(st, g_place)
@@ -342,7 +379,7 @@ class Builder:
     def _verify(self, st):
         best = None
         for b in self.active_blocks():
-            if b["color"] != st["color"] or b.get("type") != st["type"]:
+            if self.cfg["use_color"] and (b["color"] != st["color"] or b.get("type") != st["type"]):
                 continue
             x, y = b["x"], b["y"]
             if b.get("px") is not None and hasattr(self.source, "calib"):

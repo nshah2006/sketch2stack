@@ -34,7 +34,7 @@ class App:
             checked.append({**p, "problems": probs,
                             "ok": not any(x["level"] == "error" for x in probs)})
         return {"catalog": self.catalog.public(), "grid": planner.grid_info(self.cfg),
-                "presets": checked, "sim": self.world is not None,
+                "presets": checked, "sim": self.world is not None, "use_color": self.cfg["use_color"],
                 "ambiguous": [list(a[:2]) for a in self.catalog.ambiguities()]}
 
     def check(self, design):

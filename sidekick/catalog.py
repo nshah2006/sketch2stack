@@ -22,7 +22,7 @@ DEFAULT_CATALOG = {
         {"id": "cube", "name": "Cube", "shape": "box", "size": [3.0, 3.0, 3.0], "top": True,
          "colors": {"red": 2}},
         {"id": "pillar", "name": "Pillar", "shape": "box", "size": [3.0, 3.0, 6.0], "top": True,
-         "colors": {"wood": 2}},
+         "colors": {"orange": 2}},
         {"id": "plank", "name": "Plank", "shape": "box", "size": [7.0, 3.0, 1.4], "top": True,
          "colors": {"red": 2}},
         {"id": "bar", "name": "Long bar", "shape": "box", "size": [10.0, 3.0, 1.4], "top": True,
@@ -133,10 +133,16 @@ class Catalog:
             axes.append("x")
         return axes
 
+    def count(self, tid):
+        """How many of this shape the team owns (all colors)."""
+        t = self.types[tid]
+        return int(t.get("count", sum(t["colors"].values())))
+
     def public(self):
         return {"max_grip": self.max_grip,
                 "types": [{"id": t["id"], "name": t.get("name", t["id"]), "shape": t["shape"],
-                           "size": t["size"], "top": t.get("top", True), "colors": t["colors"]}
+                           "size": t["size"], "top": t.get("top", True), "colors": t["colors"],
+                           "count": self.count(t["id"])}
                           for t in self.data["types"]]}
 
 

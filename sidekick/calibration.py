@@ -279,4 +279,5 @@ class Calibration:
         R = self.R()
         pos = (R.T @ (tv.reshape(3, 1) - self.tvec)).ravel()
         normal = R.T @ cv2.Rodrigues(rv)[0][:, 2]
-        return {"x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2]), "down": float(normal[2])}
+        return {"x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2]),
+                "nx": float(normal[0]), "ny": float(normal[1]), "down": float(normal[2])}

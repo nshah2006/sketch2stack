@@ -452,10 +452,10 @@ def cmd_reach(cfg, a):
     from .body_model import BodyModel
     body = BodyModel.load(C.body_path(cfg))
     lay = cfg["layout"]
-    print("Reachable marker positions (# = yes) at the grasp height of a 3 cm block on the table,\n"
+    print("Reachable fingertip positions (# = yes) at the grasp height of a 3 cm block on the table,\n"
           "and 4 cm higher. Columns x = 0..50, rows y from back (top) to front. B = build strip, S = supply.")
     for z in (cfg.grasp_z(0, 3.0), cfg.grasp_z(0, 3.0) + 4):
-        print(f"\nmarker z = {z:.1f} cm")
+        print(f"\nfingertip z = {z:.1f} cm")
         for y in range(int(lay["work_area"][1]), -1, -2):
             row = ""
             for x in range(0, int(lay["work_area"][0]) + 1, 2):

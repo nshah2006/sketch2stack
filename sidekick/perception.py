@@ -21,6 +21,17 @@ class Observation:
     claw_px: tuple = None
 
 
+def claw_tip(claw, marker_to_fingertip):
+    """Fingertip position from a claw-marker reading. The marker faces away from
+    the fingers, so the tips sit marker_to_fingertip cm behind its face normal.
+    Works even when the claw isn't pointing straight down."""
+    if claw is None:
+        return None
+    nx, ny, nz = claw.get("nx", 0.0), claw.get("ny", 0.0), claw["down"]
+    k = marker_to_fingertip
+    return {"x": claw["x"] - k * nx, "y": claw["y"] - k * ny, "z": claw["z"] - k * nz, "down": nz}
+
+
 # ===================================================================== blocks (real images)
 def color_mask(hsv, ranges):
     mask = None
@@ -30,9 +41,14 @@ def color_mask(hsv, ranges):
     return mask
 
 
-def detect_blocks(image, cfg, calib, markers=None, claw_px=None):
+def detect_blocks(image, cfg, calib, markers=None, claw_px=None, hands_px=None):
     hsv = cv2.cvtColor(cv2.GaussianBlur(image, (5, 5), 0), cv2.COLOR_BGR2HSV)
     blank = np.zeros(image.shape[:2], np.uint8)
+    for pts in hands_px or []:              # skin is "not white" too: never call a hand a block
+        hull = cv2.convexHull(np.asarray(pts, np.int32))
+        cv2.fillConvexPoly(blank, hull, 255)
+    if hands_px:
+        blank = cv2.dilate(blank, np.ones((41, 41), np.uint8))
     for corners in (markers or {}).values():
         c = corners.mean(axis=0)
         grown = ((corners - c) * 1.3 + c).astype(np.int32)
@@ -42,8 +58,13 @@ def detect_blocks(image, cfg, calib, markers=None, claw_px=None):
     k = np.ones((5, 5), np.uint8)
     h = 3.0      # reference top height; classify() re-projects at the true height
     out = []
-    for color, ranges in cfg["colors"].items():
-        m = color_mask(hsv, ranges)
+    if cfg["use_color"]:
+        masks = [(color, color_mask(hsv, ranges)) for color, ranges in cfg["colors"].items()]
+    else:
+        # anything clearly not white board (shadows are grey, so low saturation)
+        fg = (hsv[:, :, 1] >= cfg["fg_min_saturation"]).astype(np.uint8) * 255
+        masks = [("any", fg)]
+    for color, m in masks:
         m[blank > 0] = 0
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k)     # remove specks
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)    # fill holes
@@ -87,7 +108,8 @@ def classify(detections, catalog, calib=None):
     for d in detections:
         if "size" not in d or "type" in d:
             continue
-        tid = catalog.classify(d["color"], d["size"][0], d["size"][1], d.get("round"))
+        tid = (catalog.classify(d["color"], d["size"][0], d["size"][1], d.get("round"))
+               if d["color"] != "any" else None)
         d["type"] = tid
         if tid and calib is not None and d.get("px") is not None and "z" not in d:
             top = catalog.height(tid)
@@ -241,8 +263,9 @@ class RealVision:
         if cid in markers and self.calib.has_table:
             claw = self.calib.claw_pose(markers[cid], self.cfg["claw_marker_size"])
             claw_px = tuple(markers[cid].mean(axis=0))
-        dets = detect_blocks(frame, self.cfg, self.calib, markers, claw_px) if self.calib.has_table else []
         hands = self.hands.process(frame, t, self.calib) if (self.hands and self.calib.has_table) else []
+        dets = (detect_blocks(frame, self.cfg, self.calib, markers, claw_px, [h["px"] for h in hands])
+                if self.calib.has_table else [])
         return Observation(t=t, claw=claw, detections=dets, hands=hands, image=frame,
                            markers=markers, claw_px=claw_px)
 

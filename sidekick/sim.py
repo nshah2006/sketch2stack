@@ -222,8 +222,9 @@ class ArmModel:
             return np.array([xy[0], xy[1], z])
 
         down = -u[1]   # vertical part of the marker's facing direction
+        normal = np.array([-u[0] * d[0], -u[0] * d[1], -u[1]])   # marker faces away from the fingers
         return {"marker": to3(mk), "finger": to3(fg), "wrist": to3(wr),
-                "elbow": to3(el), "down": float(down)}
+                "elbow": to3(el), "down": float(down), "normal": normal}
 
     def pose(self):
         return self.pose_from_angles(self.phys)
@@ -276,6 +277,7 @@ class SimPerson:
         self.drop_at = None
         self.reaches = 0
         self.blocked_for = 0.0
+        self.blocked_total = 0.0
 
     def request(self, tid, color):
         self.requests.append((tid, color))
@@ -300,11 +302,11 @@ class SimPerson:
         if self.state == "away":
             if self.requests:
                 tid, color = self.requests.pop(0)
-                spot = self.w.free_supply_spot()
+                spot = self.w.free_supply_spot() if self.w.cfg["use_color"] else self.w.pickup_spot()
                 if spot is None:
                     self.requests.insert(0, (tid, color))
                     return
-                self.carry, self.drop_at = (tid, color), spot
+                self.carry, self.drop_at, self.blocked_total = (tid, color), spot, 0.0
                 self.home = np.array([self.rng.uniform(10, 40), self.rng.uniform(-10, 0)])
                 self.hand = self.home.copy()
                 self.reaches += 1
@@ -321,6 +323,12 @@ class SimPerson:
             nxt = self._pos_at(min(1.0, (self.t_path + dt) / self.dur))
             if np.hypot(*(nxt - claw["finger"][:2])) < self.pause_cm:
                 self.blocked_for += dt                 # wait for the arm...
+                self.blocked_total += dt
+                if self.blocked_total > 6.0 and self.state == "feed":
+                    self.requests.insert(0, self.carry)  # give up for now; try again later
+                    self.carry, self.blocked_total = None, 0.0
+                    self._start(self.home, "back")
+                    return
                 if self.blocked_for > 1.5:             # ...then walk around it
                     self.blocked_for = 0.0
                     end = self.path[-1]
@@ -498,15 +506,18 @@ class World:
         claw = None
         if pose["down"] > 0.3:
             m = pose["marker"] + rng.normal(0, 0.2, 3)
+            nrm = pose["normal"] + rng.normal(0, 0.01, 3)
+            nrm = nrm / np.linalg.norm(nrm)
             claw = {"x": float(m[0]), "y": float(m[1]), "z": float(m[2]),
-                    "down": float(np.clip(pose["down"] + rng.normal(0, 0.02), -1, 1))}
+                    "nx": float(nrm[0]), "ny": float(nrm[1]), "down": float(nrm[2])}
         dets = []
         for b in self.blocks:
             if b.held or self._covered(b) or rng.random() < 0.02:
                 continue
             L, S = max(b.w, b.d), min(b.w, b.d)
             long_axis = b.yaw if b.w >= b.d else b.yaw + 90
-            dets.append({"color": b.color, "x": b.x + rng.normal(0, 0.3), "y": b.y + rng.normal(0, 0.3),
+            dets.append({"color": b.color if self.cfg["use_color"] else "any",
+                         "x": b.x + rng.normal(0, 0.3), "y": b.y + rng.normal(0, 0.3),
                          "angle": float(((long_axis + rng.normal(0, 2)) + 90) % 180 - 90),
                          "size": [L + rng.normal(0, 0.15), S + rng.normal(0, 0.15)],
                          "round": b.round_, "z": b.z})
@@ -535,6 +546,13 @@ class World:
             self.blocks.append(b)
         return b
 
+    def pickup_spot(self):
+        """The taped pickup square, if nothing is on it."""
+        px, py = self.cfg["layout"]["pickup"]
+        if any(math.hypot(b.x - px, b.y - py) < 3.0 and not b.held for b in self.blocks):
+            return None
+        return (px + float(self.rng.normal(0, 0.4)), py + float(self.rng.normal(0, 0.4)))
+
     def clear_blocks(self):
         with self.lock:
             self.blocks = [b for b in self.blocks if b.held]
@@ -550,7 +568,10 @@ class World:
         return None
 
     def fill_supply(self, items):
-        """items: [(type, color)] placed directly (no person) where they fit."""
+        """items: [(type, color)] placed directly (no person) where they fit.
+        Colorless mode only uses the pickup spot, so nothing is pre-placed."""
+        if not self.cfg["use_color"]:
+            return []
         placed = []
         for tid, color in items:
             spot = self.free_supply_spot()

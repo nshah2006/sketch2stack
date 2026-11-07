@@ -66,7 +66,7 @@ def validate(design, cfg, catalog):
         t = catalog.types.get(b.get("type"))
         if t is None:
             probs.append({"index": i, "level": "error", "msg": f"unknown block type {b.get('type')}"})
-        elif b.get("color") not in t["colors"]:
+        elif cfg["use_color"] and b.get("color") not in t["colors"]:
             probs.append({"index": i, "level": "error", "msg": f"no {b.get('color')} {t['name']} blocks"})
     st = settle(design, cfg, catalog)
     for i, s in st.items():
@@ -91,13 +91,16 @@ def validate(design, cfg, catalog):
                 probs.append({"index": i, "level": "warn", "msg": "less than half supported; may wobble"})
     need = {}
     for b in blocks:
-        k = (b.get("type"), b.get("color"))
+        k = (b.get("type"), b.get("color") if cfg["use_color"] else None)
         need[k] = need.get(k, 0) + 1
     for (tid, color), n in need.items():
-        have = catalog.types.get(tid, {}).get("colors", {}).get(color, 0)
+        if tid not in catalog.types:
+            continue
+        have = catalog.types[tid]["colors"].get(color, 0) if color else catalog.count(tid)
         if n > have:
+            name = catalog.types[tid]["name"].lower()
             probs.append({"index": None, "level": "error",
-                          "msg": f"needs {n} {color} {tid} but only {have} owned"})
+                          "msg": f"needs {n} {(color + ' ') if color else ''}{name}s but only {have} owned"})
     return st, probs
 
 

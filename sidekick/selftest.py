@@ -204,7 +204,7 @@ def _grid_error(cfg, w, arm, body):
             s = body.solve([x, y, z])
             arm.move(s["pulses"] + [1500, cfg["claw_open"]])
             w.clock.sleep(0.3)
-            errs.append(float(np.linalg.norm(w.truth()["marker"] - [x, y, z])))
+            errs.append(float(np.linalg.norm(w.truth()["finger"] - [x, y, z])))
     return float(np.mean(errs)), float(np.max(errs))
 
 

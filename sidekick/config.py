@@ -70,7 +70,7 @@ DEFAULTS = {
     "babble_samples": 800,
     "babble_step": 120,
     "babble_settle": 0.6,
-    "babble_min_height": 4.0,
+    "babble_min_height": 1.5,      # fingertip height; below this babbling pulls back
 
     # --- optional parts ---
     "force_sensors": False,
@@ -97,18 +97,26 @@ DEFAULTS = {
         "build_area": [15.0, 35.0, 23.0, 27.0],
         # supply zones: x0, x1, y0, y1 (loose blocks are put here)
         "supply": {"left": [7.0, 15.0, 28.0, 34.0], "right": [35.0, 43.0, 28.0, 34.0]},
+        # pickup spot (center of a taped square): with use_color off, the arm asks
+        # for each block here and trusts that it's the shape it asked for
+        "pickup": [11.0, 31.0],
     },
     "max_build_height": 12.0,      # cm; taller stacks are out of reach
     "depth_slot": 3.0,             # cm per front-to-back slot in the build strip
     "place_clearance": 3.0,        # hover this far above a placement / pick
 
     # --- vision ---
+    # use_color false: blocks are found as "anything not white" and the arm asks
+    # for each block on the pickup spot. true: blocks are told apart by color +
+    # outline anywhere in the supply zones (needs distinct colors per shape).
+    "use_color": False,
+    "fg_min_saturation": 45,
     "colors": {
         "red": [[[0, 120, 70], [8, 255, 255]], [[170, 120, 70], [179, 255, 255]]],
         "blue": [[[95, 120, 60], [130, 255, 255]]],
         "green": [[[40, 80, 60], [85, 255, 255]]],
         "yellow": [[[20, 110, 110], [35, 255, 255]]],
-        "wood": [[[10, 30, 110], [25, 100, 255]]],
+        "orange": [[[9, 130, 120], [19, 255, 255]]],
     },
     "block_area_min": 300,
     "block_area_max": 20000,
@@ -198,8 +206,8 @@ class Config(dict):
         return 0 <= x <= w and 0 <= y <= h
 
     def grasp_z(self, bottom, height):
-        """Claw-marker height that puts the fingertips at a block's mid-height."""
-        return bottom + height / 2 + self["marker_to_fingertip"]
+        """Fingertip height for gripping a block at its mid-height."""
+        return bottom + height / 2
 
     def hover_z(self, bottom, height):
         return self.grasp_z(bottom, height) + self["place_clearance"]

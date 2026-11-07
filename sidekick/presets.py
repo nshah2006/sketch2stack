@@ -36,7 +36,7 @@ PRESETS = [
      "blocks": [
          {"type": "cyl_short", "color": "blue", "x": 1.0, "depth": 0, "rot": 0, "z_hint": 0},
          {"type": "cube", "color": "red", "x": 4.5, "depth": 0, "rot": 0, "z_hint": 0},
-         {"type": "pillar", "color": "wood", "x": 8.0, "depth": 0, "rot": 0, "z_hint": 0},
+         {"type": "pillar", "color": "orange", "x": 8.0, "depth": 0, "rot": 0, "z_hint": 0},
          {"type": "cyl_tall", "color": "red", "x": 11.5, "depth": 0, "rot": 0, "z_hint": 0},
      ]},
 ]

@@ -1,6 +1,6 @@
 # Sidekick Builder (HackUTD)
 
-Pick a preset (or draw a build from the front in the browser) and a 6-joint arm builds it out of real wooden blocks. Blocks drop by gravity in the designer, so the planner works out every block's height, order and grip; the overhead camera finds loose blocks by color and outline, and the arm freezes whenever a hand comes near the claw.
+Pick a preset (or draw a build from the front in the browser) and a 6-joint arm builds it out of real wooden blocks. Blocks drop by gravity in the designer, so the planner works out every block's height, order and grip; the arm asks for each block on a taped **pickup spot** (or, with `use_color` on, finds it by color and outline in the supply zones), and it freezes whenever a hand comes near the claw.
 
 Everything runs in a **simulator first**. At the hackathon the same code switches to the real arm by setting `use_sim` to `false`.
 
@@ -14,7 +14,7 @@ python -m sidekick setup            # data folder, checks, hand model download
 python -m sidekick selftest         # 7 checks, about 2 minutes
 python -m sidekick ui --sim --speed 3
 ```
-Open http://localhost:8000, pick **House**, click **Put blocks in supply**, then **Build this**. **Sim: reach in** sends a simulated hand in to show the safety freeze.
+Open http://localhost:8000, pick **House**, then **Build this**. The simulated person puts each requested block on the pickup spot. **Sim: reach in** sends a hand in to show the safety freeze.
 
 If `setup` says OpenCV has no ArUco: `pip uninstall -y opencv-python opencv-contrib-python && pip install "opencv-contrib-python<4.11"`.
 
@@ -30,9 +30,9 @@ Do these in order. Each one writes to `sidekick_data/`, so any step can be redon
 | 4 | Find limits and poses with one hand on the battery switch: `min <j>` / `max <j>` at each end stop, then `save home`, `save park` (folded, low effort), `save ready` (**claw pointing straight down over the middle of the board, marker visible**), `save open`, `save closed` | `jog --real` | `config.json` has limits and poses |
 | 5 | Print markers at 100%, measure them, glue the claw marker on the gripper's back plate | `python -m sidekick markers` | Sizes in config match the ruler |
 | 6 | Camera 60 cm up looking straight down. Lens (15+ chessboard views), then table | `calib-lens --real`, `calib-table --real` | Lens error < 0.5 px, table < 1.5 px, height ≈ 60 cm, ruler check within 5 mm |
-| 7 | Tune colors under the venue light | `tune-colors --real` | Every block color shows cleanly |
+| 7 | Check block detection under the venue light. Color off: every block shows in `view` and shadows don't (raise/lower `fg_min_saturation`). Color on: `tune-colors` | `view --real` | Each block is one clean outline |
 | 8 | Babble (15–20 min, watch it), then train | `babble --real`, `train-body --real` | Held-out error < 1 cm |
-| 9 | See what the real arm reaches; move `layout.build_area` / `layout.supply` in `config.json` onto it | `reach --real` | No lowercase `b`/`s` in the map |
+| 9 | See what the real arm reaches; move `layout.build_area`, `layout.supply` and `layout.pickup` in `config.json` onto it, and tape the pickup square there | `reach --real` | No lowercase `b`/`s` in the map; pickup on a `#` |
 | 10 | Accuracy and pick tests | `goto-test --real`, `pick-test --real -n 10` | < 5 mm; 8 of 10 picks |
 | 11 | Check the presets against the real arm | `presets --real` | All say `OK` |
 | 12 | Demo | `ui --real` | 4 of the last 5 rehearsals succeed |
@@ -52,7 +52,11 @@ Wooden blocks, no studs. Sizes are width × depth × height in cm, as the block 
 | arch | arch | 6 × 3 × 3 | yes |
 | roof | roof | 6 × 3 × 3 | no |
 
-**Update the colors and counts** to what you own. The overhead camera sees footprints, not heights: two types with the same footprint, outline and color can't be told apart (`setup` lists any such pairs). Give them different colors. Put colored tape on the natural-wood pillar (beige on white is hard to see).
+**Update the counts** to what you own (colors come from the photos).
+
+**Two ways to get blocks** (`use_color` in config):
+* **off (default): pickup spot.** The UI says "Place a roof on the pickup spot"; the camera only needs to see *a* block there (anything not white), and the arm knows its shape because it asked. Tape a 5 cm square at `layout.pickup`. Hands are masked out, and the arm waits until the block has sat still with no hand near it for 1 s.
+* **on: supply zones.** Blocks lie anywhere in the two supply zones and are told apart by color + outline (circle / square / long rectangle) + footprint. The camera sees footprints, not heights, so two shapes with the same outline and color can't be told apart (`setup` lists any such pairs).
 
 ## How it works
 
@@ -66,7 +70,7 @@ camera -> markers -> claw pose         |            |
 
 * **Planner** (`planner.py`): settles blocks by gravity, checks support (nothing on a roof, center over its supports), strip bounds, height, inventory, and reach (through the body model). Orders placements bottom-up, back slot first, left to right, and picks which way the fingers close so they don't hit a neighbour.
 * **Depth**: a front view can't show depth, so every block defaults to the front slot (a wall). "Push back" moves a block one slot back; the top view shows it.
-* **Body model** (`body_model.py`): babbling + a small neural net (pulses → claw x, y, z, down-ness) + gradient search for any target, with up to 3 camera corrections per move.
+* **Body model** (`body_model.py`): babbling + a small neural net (pulses → fingertip x, y, z, down-ness) + gradient search for any target, with up to 3 camera corrections per move. The camera reads the claw marker's full pose, so the fingertip position is right even when the claw is slightly tilted (set `marker_to_fingertip` by measuring).
 * **Builder** (`builder.py`): finds a matching loose block in a supply zone (or asks the user to put one there, with the arm parked), picks it, turns the wrist, places it, checks it with the camera. Safety stop on every frame; the current move resumes 1 s after the area is clear.
 
 ## Commands

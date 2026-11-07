@@ -128,8 +128,9 @@ class Motion:
             ok = bool(self.arm.holding())
         else:
             self.clock.sleep(0.3)
-            ok = not any(b["color"] == blk["color"] and b.get("type") == blk.get("type")
-                         and math.hypot(b["x"] - x, b["y"] - y) < 2.5 for b in self.get_blocks())
+            same = (lambda b: True) if not self.cfg["use_color"] else (
+                lambda b: b["color"] == blk["color"] and b.get("type") == blk.get("type"))
+            ok = not any(same(b) and math.hypot(b["x"] - x, b["y"] - y) < 2.5 for b in self.get_blocks())
         if not ok:
             self.set_claw(open_)
             return "miss"

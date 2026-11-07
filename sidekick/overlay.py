@@ -7,7 +7,17 @@ import cv2
 import numpy as np
 
 BGR = {"red": (60, 60, 220), "blue": (220, 140, 40), "green": (80, 190, 60),
-       "yellow": (40, 210, 235), "wood": (140, 180, 215)}
+       "yellow": (40, 210, 235), "orange": (30, 140, 245), "any": (150, 150, 150)}
+# colorless mode: one fixed color per shape so the view stays readable
+TYPE_BGR = {"cube": (60, 60, 220), "pillar": (30, 140, 245), "plank": (70, 90, 200),
+            "bar": (80, 190, 60), "cyl_short": (220, 140, 40), "cyl_tall": (90, 70, 200),
+            "arch": (60, 160, 80), "roof": (40, 210, 235)}
+
+
+def _col(cfg, color, tid):
+    if cfg["use_color"]:
+        return BGR.get(color, (150, 150, 150))
+    return TYPE_BGR.get(tid, (150, 150, 150))
 MODE_COLOR = {"idle": (160, 160, 160), "building": (80, 190, 60), "waiting": (40, 200, 230),
               "done": (220, 140, 40), "stopped": (60, 60, 220)}
 
@@ -70,13 +80,19 @@ def draw(img, proj, cfg, catalog, state):
         _zone(img, proj, r, (60, 140, 200), f"supply {name}")
     bx, by = lay["base"]
     cv2.circle(img, proj(bx, by), 10, (90, 90, 90), 2)
+    if not cfg["use_color"]:
+        px, py = lay["pickup"]
+        pts = np.array([proj(px - 2.5, py - 2.5), proj(px + 2.5, py - 2.5), proj(px + 2.5, py + 2.5),
+                        proj(px - 2.5, py + 2.5)], np.int32)
+        cv2.polylines(img, [pts], True, (40, 120, 230), 2)
+        cv2.putText(img, "pickup", tuple(pts[3] + [2, -4]), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (40, 120, 230), 1)
     # plan ghosts
     done = {i for i, s in enumerate(state.get("steps", [])) if s["state"] == "done"}
     for i, st in enumerate(state.get("plan", [])):
         if i in done:
             continue
         fx, fy = catalog.footprint(st["type"], 0)
-        col = BGR.get(st["color"], (120, 120, 120))
+        col = _col(cfg, st["color"], st["type"])
         top = st["z"] + st["h"]
         if catalog.round_(st["type"]):
             c, e = proj(st["x"], st["y"], top), proj(st["x"] + fx / 2, st["y"], top)
@@ -89,8 +105,8 @@ def draw(img, proj, cfg, catalog, state):
         cv2.putText(img, str(i + 1), anchor, cv2.FONT_HERSHEY_SIMPLEX, 0.35, col, 1)
     # blocks
     for b in state.get("blocks", []):
-        col = BGR.get(b["color"], (120, 120, 120))
         tid = b.get("type")
+        col = _col(cfg, b["color"], tid) if (tid or cfg["use_color"]) else (150, 150, 150)
         top = (b.get("z") or 0) + (catalog.height(tid) if tid else 3.0)
         if tid and catalog.round_(tid):
             r = catalog.size(tid)[0] / 2
@@ -102,7 +118,7 @@ def draw(img, proj, cfg, catalog, state):
             pts = _rect_pts(proj, b["x"], b["y"], w, d, b.get("yaw", 0.0), top)
             cv2.fillPoly(img, [pts], col, cv2.LINE_AA)
             cv2.polylines(img, [pts], True, (40, 40, 40), 1, cv2.LINE_AA)
-        label = catalog.types[tid]["name"] if tid else "?"
+        label = catalog.types[tid]["name"] if tid else ("block" if not cfg["use_color"] else "?")
         cv2.putText(img, label, proj(b["x"] - 1.5, b["y"] - 2.4, top), cv2.FONT_HERSHEY_SIMPLEX, 0.33,
                     (50, 50, 50), 1)
     # hands

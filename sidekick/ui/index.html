@@ -115,7 +115,7 @@
     <div class="toolbar">
       <span class="hint" id="countHint"></span>
       <span class="sp"></span>
-      <button id="btnSimReset" style="display:none">Put blocks in supply</button>
+      <button id="btnSimReset" style="display:none">Reset table</button>
       <button class="primary" id="btnBuild">Build this</button>
     </div>
   </section>
@@ -139,7 +139,11 @@
 </main>
 
 <script>
-const COLORS = { red: "#d9443a", blue: "#2f7fd6", green: "#43b74a", yellow: "#f2c230", wood: "#d8b98a" };
+const COLORS = { red: "#d9443a", blue: "#2f7fd6", green: "#43b74a", yellow: "#f2c230", orange: "#f28c1e" };
+// colorless mode: one fixed color per shape (matches the live view)
+const TYPE_COLORS = { cube: "#d9443a", pillar: "#f28c1e", plank: "#c8504a", bar: "#43b74a",
+  cyl_short: "#2f7fd6", cyl_tall: "#c84a6a", arch: "#4fa064", roof: "#f2c230" };
+const fillFor = b => (INFO && !INFO.use_color) ? (TYPE_COLORS[b.type] || "#9aa0a6") : (COLORS[b.color] || "#999");
 const S = 30;              // editor pixels per cm
 const SNAP = 0.5;          // cm
 let INFO = null, TYPES = {};
@@ -181,7 +185,7 @@ function drawBlock(g, b, x, z, s, opts = {}) {
   const [fx] = footprint(b);
   const h = TYPES[b.type].size[2];
   const grp = svgEl("g", { transform: `translate(${x * s},${opts.base - z * s})` });
-  const p = svgEl("path", { d: shapePath(b.type, b.rot || 0, fx, h, s), fill: COLORS[b.color] || "#999",
+  const p = svgEl("path", { d: shapePath(b.type, b.rot || 0, fx, h, s), fill: fillFor(b),
     stroke: opts.stroke || "rgba(0,0,0,.35)", "stroke-width": opts.sw || 1, opacity: opts.opacity ?? 1 });
   grp.appendChild(p);
   if (opts.label) {
@@ -225,18 +229,30 @@ function renderPresets() {
 }
 
 // ------------------------------------------------------------ palette
-function used(type, color) { return design.blocks.filter(b => b.type === type && b.color === color).length; }
+function used(type, color) {
+  return design.blocks.filter(b => b.type === type && (!INFO.use_color || b.color === color)).length;
+}
+
+function paletteEntries() {
+  const out = [];
+  for (const t of INFO.catalog.types) {
+    if (INFO.use_color) for (const [color, n] of Object.entries(t.colors)) out.push([t, color, n]);
+    else out.push([t, Object.keys(t.colors)[0] || "any", t.count]);
+  }
+  return out;
+}
 
 function renderPalette() {
   const box = $("palette"); box.innerHTML = "";
-  for (const t of INFO.catalog.types) for (const [color, n] of Object.entries(t.colors)) {
+  for (const [t, color, n] of paletteEntries()) {
     const left = n - used(t.id, color);
     const chip = document.createElement("div"); chip.className = "chip" + (left <= 0 ? " empty" : "");
     const [w, , h] = t.size, s = 40 / Math.max(w, h, 3);
     const svg = svgEl("svg", { viewBox: `${-4} ${-h * s - 4} ${w * s + 8} ${h * s + 8}` });
     drawBlock(svg, { type: t.id, color, rot: 0 }, 0, 0, s, { base: 0 });
     chip.appendChild(svg);
-    const lab = document.createElement("div"); lab.innerHTML = `${t.name} <span class="n">${color} · ${left} left</span>`;
+    const lab = document.createElement("div");
+    lab.innerHTML = `${t.name} <span class="n">${INFO.use_color ? color + " · " : ""}${left} left</span>`;
     chip.appendChild(lab);
     if (left > 0) chip.addEventListener("pointerdown", e => startDrag(e, { type: t.id, color, rot: 0, depth: 0 }, null));
     box.appendChild(chip);
@@ -283,7 +299,7 @@ function renderTop() {
   design.blocks.forEach((b, i) => {
     const [fx, fy] = footprint(b); const y0 = (b.depth || 0) * ds;
     const r = TYPES[b.type].shape === "cylinder";
-    const attrs = { fill: COLORS[b.color], stroke: i === selected ? "#1f6feb" : "rgba(0,0,0,.35)",
+    const attrs = { fill: fillFor(b), stroke: i === selected ? "#1f6feb" : "rgba(0,0,0,.35)",
       "stroke-width": i === selected ? 3 : 1, opacity: .85 };
     if (r) svg.appendChild(svgEl("ellipse", { cx: (b.x + fx / 2) * S, cy: H - 5 - (y0 + fy / 2) * s,
       rx: fx / 2 * S, ry: fy / 2 * s, ...attrs }));
