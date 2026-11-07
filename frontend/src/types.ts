@@ -1,5 +1,5 @@
 export type BlockShape = 'cube' | 'brick' | 'plank' | 'arch' | 'cylinder' | 'triangle'
-export type BlockColor = 'pink' | 'red' | 'blue' | 'yellow' | 'green' | 'white' | 'orange'
+export type BlockColor = 'pink' | 'red' | 'blue' | 'yellow' | 'green' | 'white' | 'orange' | 'purple' | 'natural'
 
 /** One toy block. x,y,z = min corner in block units, y is up. */
 export type Block = {

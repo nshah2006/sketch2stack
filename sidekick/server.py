@@ -25,7 +25,7 @@ from pathlib import Path
 
 import cv2
 
-from . import planner, presets, webapi
+from . import planner, presets, speech, webapi
 from .overlay import TopDown, render
 
 UI_DIR = Path(__file__).parent / "ui"
@@ -230,6 +230,15 @@ def make_handler(app):
 
         def _post(self):
             path = self.path.split("?")[0]
+            if path == "/api/transcribe":    # raw audio bytes, not JSON
+                n = int(self.headers.get("Content-Length") or 0)
+                if n > speech.MAX_BYTES:
+                    return self._send(413, {"error": "That recording is too long. Keep it under about a minute."})
+                audio = self.rfile.read(n)
+                try:
+                    return self._send(200, {"text": speech.transcribe(audio, self.headers.get("Content-Type"))})
+                except speech.SpeechError as e:
+                    return self._send(e.status, {"error": e.msg})
             try:
                 data = self._json()
             except json.JSONDecodeError:

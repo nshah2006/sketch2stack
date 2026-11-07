@@ -8,6 +8,8 @@ export const BLOCK_HEX: Record<BlockColor, string> = {
   green: '#22c55e',
   white: '#e7e5e4',
   orange: '#f28c1e',
+  purple: '#8b5cf6',
+  natural: '#d4a373', // unpainted wood
 }
 
 let n = 0
