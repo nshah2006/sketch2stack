@@ -120,6 +120,28 @@ export function Workspace() {
     }
   }
 
+  // Typed (later spoken) request -> a build on the choose screen. Never starts the robot.
+  // Shares genSeq with generate(), so only the newest request of either kind is applied.
+  const dictate = async (text: string): Promise<string> => {
+    if (stageRef.current === 'live') return 'The arm is building right now. Stop it or wait until it finishes first.'
+    const mine = ++genSeq.current
+    try {
+      const cur = stageRef.current === 'choose' ? (builds[buildIdx] ?? null) : null
+      const res = await api.dictate(text, cur, mine)
+      if (mine !== genSeq.current || res.request_id !== mine) return ''
+      if (res.builds.length) {
+        setBuilds(res.builds)
+        setBuildIdx(0)
+        setAnimDone(true)
+        persist({ prompt: text, builds: res.builds, buildIds: res.builds.map((b) => b.id), selectedBuild: 0, status: 'generated' })
+        setStage('choose')
+      }
+      return res.reply
+    } catch (e) {
+      return (e as Error).message
+    }
+  }
+
   // Leave the generating screen when the animation finished AND the builds arrived
   // (or 6 s after they arrived, so a slow/stalled animation can't trap the user).
   useEffect(() => {
@@ -297,7 +319,7 @@ export function Workspace() {
 
       <ProjectsDrawer open={drawer} onClose={() => setDrawer(false)} activeId={projectId} onAction={onProject} onNew={newProject} />
       <BottomNav stage={stage} hasBuilds={builds.length > 0 || !!run} onNav={onNav} />
-      <TalkPanel open={talk} onOpenChange={setTalk} />
+      <TalkPanel open={talk} onOpenChange={setTalk} onSubmit={dictate} build={stage === 'choose' ? (builds[buildIdx] ?? null) : null} />
       <LabsModal open={labs} onClose={() => setLabs(false)} />
     </div>
   )

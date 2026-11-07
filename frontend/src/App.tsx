@@ -6,6 +6,7 @@ import { ToastProvider } from './components/Toast'
 import { BackendProvider } from './backend'
 import { AuthPage } from './pages/AuthPage'
 import { Workspace } from './pages/Workspace'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 export default function App() {
   return (
@@ -21,7 +22,9 @@ export default function App() {
               element={
                 <RequireAuth>
                   <ProjectsProvider>
-                    <Workspace />
+                    <ErrorBoundary>
+                      <Workspace />
+                    </ErrorBoundary>
                   </ProjectsProvider>
                 </RequireAuth>
               }

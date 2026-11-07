@@ -1,27 +1,53 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Keyboard, Mic, MicOff, Send, X } from 'lucide-react'
-import { mockReply, SUGGESTIONS, VOICE_SCRIPT, type ChatMsg } from '../../mocks/chat'
+import { VOICE_SCRIPT, type ChatMsg } from '../../mocks/chat'
+import { useBackend } from '../../backend'
+import type { Build } from '../../types'
 import { uid } from '../../store/storage'
 
-type Props = { open: boolean; onOpenChange: (o: boolean) => void }
+type Props = {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  /** Sends a request to the backend; resolves to the agent's reply ('' if a newer request replaced it). */
+  onSubmit: (text: string) => Promise<string>
+  /** The build on screen (choose stage), so chips can offer edits that apply to it. */
+  build: Build | null
+}
 
-export function TalkPanel({ open, onOpenChange }: Props) {
+export function TalkPanel({ open, onOpenChange, onSubmit, build }: Props) {
+  const { online, info } = useBackend()
   const [mode, setMode] = useState<'voice' | 'chat'>('voice')
   const [msgs, setMsgs] = useState<ChatMsg[]>([
-    { id: 'hi', from: 'agent', text: 'Hi! I can tweak your build, explain choices, or control the arm. Try a suggestion below.' },
+    { id: 'hi', from: 'agent', text: 'Hi! Describe what to build ("a plank and a roof on top") and I will put it on the Choose screen. I never start the arm myself.' },
   ])
   const [typing, setTyping] = useState(false)
 
-  const send = (text: string) => {
+  const send = async (text: string) => {
     if (!text.trim()) return
     setMsgs((m) => [...m, { id: uid(), from: 'user', text }])
     setTyping(true)
-    setTimeout(() => {
-      setTyping(false)
-      setMsgs((m) => [...m, { id: uid(), from: 'agent', text: mockReply(text) }])
-    }, 900)
+    const reply = await onSubmit(text)
+    setTyping(false)
+    if (reply) setMsgs((m) => [...m, { id: uid(), from: 'agent', text: reply }])
   }
+
+  // Only offer edits the catalog supports for the build on screen.
+  const chips = (() => {
+    if (!build) return ['A plank and a roof on top', 'Two cubes with a roof on top', 'Make a house']
+    const out = ['Make it taller', 'Use fewer blocks']
+    const inv = info?.inventory ?? {}
+    for (const have of new Set(build.blocks.map((b) => b.color as string))) {
+      const types = build.blocks.filter((b) => b.color === have).map((b) => b.type ?? '')
+      const all = new Set(Object.values(inv).flatMap((i) => Object.keys(i.colors)))
+      const target = [...all].find((c) => c !== have && types.every((t) => (inv[t]?.colors[c] ?? 0) > 0))
+      if (target) {
+        out.push(`Swap ${have} for ${target}`)
+        break
+      }
+    }
+    return [...out, 'Why this build?']
+  })()
 
   useEffect(() => {
     if (!open) return
@@ -47,7 +73,7 @@ export function TalkPanel({ open, onOpenChange }: Props) {
             <header className="flex items-center justify-between border-b border-line px-4 py-3">
               <div>
                 <div className="text-sm font-semibold">Build agent</div>
-                <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">placeholder · not connected</div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">{online ? 'connected to the arm server' : 'server offline'}</div>
               </div>
               <div className="flex items-center gap-1">
                 <div className="flex rounded-lg border border-line p-0.5 text-xs">
@@ -71,7 +97,7 @@ export function TalkPanel({ open, onOpenChange }: Props) {
               </div>
             </header>
 
-            {mode === 'voice' ? <Voice onTranscript={(heard, reply) => setMsgs((m) => [...m, { id: uid(), from: 'user', text: heard }, { id: uid(), from: 'agent', text: reply }])} /> : <Chat msgs={msgs} typing={typing} onSend={send} />}
+            {mode === 'voice' ? <Voice onTranscript={(heard, reply) => setMsgs((m) => [...m, { id: uid(), from: 'user', text: heard }, { id: uid(), from: 'agent', text: reply }])} /> : <Chat msgs={msgs} typing={typing} chips={chips} onSend={send} />}
           </motion.div>
         )}
       </AnimatePresence>
@@ -206,14 +232,19 @@ function Waveform({ active }: { active: boolean }) {
   )
 }
 
-function Chat({ msgs, typing, onSend }: { msgs: ChatMsg[]; typing: boolean; onSend: (t: string) => void }) {
+function Chat({ msgs, typing, chips, onSend }: { msgs: ChatMsg[]; typing: boolean; chips: string[]; onSend: (t: string) => void }) {
   const [text, setText] = useState('')
-  const end = useRef<HTMLDivElement>(null)
-  useEffect(() => end.current?.scrollIntoView({ behavior: 'smooth' }), [msgs, typing])
+  const list = useRef<HTMLDivElement>(null)
+  // Scroll only the message list. scrollIntoView also scrolls overflow:hidden ancestors
+  // and shoved the whole app out of view (black screen) when a chip was clicked.
+  useEffect(() => {
+    const el = list.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }, [msgs, typing])
 
   return (
     <>
-      <div className="flex-1 space-y-2 overflow-y-auto p-4">
+      <div ref={list} className="flex-1 space-y-2 overflow-y-auto p-4">
         {msgs.map((m) => (
           <motion.div
             key={m.id}
@@ -232,10 +263,9 @@ function Chat({ msgs, typing, onSend }: { msgs: ChatMsg[]; typing: boolean; onSe
             ))}
           </div>
         )}
-        <div ref={end} />
       </div>
       <div className="flex gap-1.5 overflow-x-auto px-4 pb-2">
-        {SUGGESTIONS.map((s) => (
+        {chips.map((s) => (
           <button key={s} onClick={() => onSend(s)} className="shrink-0 rounded-full border border-line px-2.5 py-1 text-xs text-muted transition-colors hover:border-pink/60 hover:text-pink-soft">
             {s}
           </button>
