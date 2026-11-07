@@ -26,6 +26,9 @@ DEFAULTS = {
     "sim_seed": None,              # None = new random arm errors each start
 
     # --- hardware ---
+    "arm_type": "uno",             # "uno" (our firmware) or "xarm" (Hiwonder xArm 1S over USB)
+    # xArm servo id for our joints 0-5 (base, shoulder, elbow, wrist pitch, wrist roll, gripper)
+    "xarm_ids": [6, 5, 4, 3, 2, 1],
     "serial_port": "auto",
     "baud": 115200,
     "camera_index": 0,
