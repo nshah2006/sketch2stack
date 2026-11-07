@@ -1,0 +1,359 @@
+"""Builder: runs a build plan on the arm (replaces the handbook coordinator).
+
+Two threads:
+  vision  every frame: observation -> block types -> tracker -> hands ->
+          safety check -> shared state. Only the safety stop may touch the
+          arm from here.
+  worker  the only thread that moves the arm: for each planned step, find a
+          matching loose block in a supply zone (or ask for one), pick it,
+          turn it, place it, check it with the camera.
+
+Safety, every frame, first: a hand within stop_distance of the claw while the
+claw is low -> stop the arm at once; resume after the area is clear for
+resume_after seconds. The claw unseen for over 1 s while moving with a hand
+in the work area also stops it.
+"""
+import collections
+import json
+import math
+import threading
+import time
+
+from . import config as C
+from .catalog import block_yaw_from_long_axis, fold180
+from .motion import Motion
+from .perception import BlockTracker, classify
+from .planner import plan as make_plan
+
+LED = {"idle": 0, "building": 1, "waiting": 2, "done": 3, "stopped": 4}
+
+
+class Builder:
+    def __init__(self, cfg, catalog, source, arm, body, feeder=None, log_dir=None):
+        self.cfg, self.catalog, self.source, self.arm, self.body = cfg, catalog, source, arm, body
+        self.clock = arm.clock
+        self.feeder = feeder                     # sim person (auto-feed) or None (ask the user)
+        self.tracker = BlockTracker(cfg)
+        self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+        self.abort = threading.Event()           # safety stop: interrupts the current move
+        self.cancel = threading.Event()          # user pressed Stop: end the build
+        self._quit = threading.Event()
+        self.obs = None
+        self.blocks = []
+        self.hands = []
+        self.claw = None
+        self.claw_seen_t = 0.0
+        self.claw_seq = 0
+        self.claw_hist = collections.deque(maxlen=20)
+        self.safety_stopped = False
+        self._clear_since = None
+        self.mode = "idle"
+        self.status = {"mode": "idle", "action": "", "step": 0, "total": 0, "prompt": None,
+                       "steps": [], "log": [], "safety": False, "fps": 0.0, "result": None}
+        self.plan_steps = []
+        self._fps_t, self._fps_n = time.monotonic(), 0
+        self._worker = None
+        self.motion = Motion(cfg, arm, body, catalog, self.read_claw, self.active_blocks,
+                             self.abort, self.wait_resume, log=self.log)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        self.log_path = C.path("logs", log_dir) / f"run_{stamp}.jsonl"
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._vision = threading.Thread(target=self._vision_loop, daemon=True)
+        self._vision.start()
+
+    # ================================================================ logging/status
+    def log(self, msg, **extra):
+        rec = {"t": round(self.clock.time(), 2), "mode": self.mode, "msg": msg, **extra}
+        with open(self.log_path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        with self.lock:
+            self.status["log"] = (self.status["log"] + [msg])[-40:]
+
+    def set_mode(self, mode, action=None):
+        self.mode = mode
+        with self.lock:
+            self.status["mode"] = mode
+            if action is not None:
+                self.status["action"] = action
+        if self.cfg["leds"] or self.cfg["use_sim"]:
+            try:
+                self.arm.led(LED.get(mode, 0))
+            except Exception:
+                pass
+
+    def action(self, text):
+        with self.lock:
+            self.status["action"] = text
+
+    def snapshot(self):
+        with self.lock:
+            s = dict(self.status)
+            s["blocks"] = [dict(b) for b in self.blocks]
+            s["hands"] = list(self.hands)
+            s["claw"] = self.claw
+            s["plan"] = list(self.plan_steps)
+            return s
+
+    # ================================================================ vision thread
+    def _vision_loop(self):
+        while not self._quit.is_set():
+            obs = self.source.read(timeout=0.5)
+            if obs is None:
+                continue
+            classify(obs.detections, self.catalog, getattr(self.source, "calib", None))
+            blocks = self.tracker.update(obs.detections, obs.t)
+            for b in blocks:
+                if b.get("type"):
+                    b["yaw"] = block_yaw_from_long_axis(b.get("angle", 0.0), b["type"], self.catalog)
+            self._safety(obs)
+            with self.cond:
+                self.obs, self.blocks, self.hands = obs, blocks, obs.hands
+                if obs.claw is not None:
+                    self.claw = obs.claw
+                    self.claw_seen_t = obs.t
+                    self.claw_seq += 1
+                    self.claw_hist.append(obs.claw)
+                self.cond.notify_all()
+            self._fps_n += 1
+            now = time.monotonic()
+            if now - self._fps_t >= 1.0:
+                with self.lock:
+                    self.status["fps"] = self._fps_n / (now - self._fps_t)
+                self._fps_t, self._fps_n = now, 0
+
+    def _safety(self, obs):
+        claw = obs.claw
+        if claw is None and self.claw is not None and obs.t - self.claw_seen_t < 0.5:
+            claw = self.claw            # briefly hidden (e.g. by the hand itself)
+        danger = False
+        if claw is not None and claw["z"] < self.cfg["stop_claw_height"]:
+            for h in obs.hands:
+                if math.hypot(h["x"] - claw["x"], h["y"] - claw["y"]) < self.cfg["stop_distance"]:
+                    danger = True
+        if (obs.claw is None and self.arm.moving and obs.hands
+                and obs.t - self.claw_seen_t > self.cfg["claw_unseen_stop"]):
+            if any(self.cfg.in_work_area(h["x"], h["y"]) for h in obs.hands):
+                danger = True
+        if danger:
+            self._clear_since = None
+            if not self.safety_stopped:
+                self.arm.stop()
+                self.abort.set()
+                self.safety_stopped = True
+                with self.lock:
+                    self.status["safety"] = True
+                self.log("SAFETY STOP: hand near the claw")
+                if self.cfg["leds"] or self.cfg["use_sim"]:
+                    self.arm.led(LED["stopped"])
+        elif self.safety_stopped:
+            if self._clear_since is None:
+                self._clear_since = obs.t
+            elif obs.t - self._clear_since >= self.cfg["resume_after"]:
+                self.safety_stopped = False
+                self.abort.clear()
+                with self.lock:
+                    self.status["safety"] = False
+                self.log("clear: resuming")
+                self.set_mode(self.mode)
+
+    # ================================================================ helpers for motion
+    def active_blocks(self):
+        with self.lock:
+            return [dict(b) for b in self.blocks]
+
+    def read_claw(self, n=5, timeout=1.5):
+        end = self.clock.time() + timeout
+        with self.cond:
+            start = self.claw_seq
+            while self.claw_seq - start < n:
+                left = end - self.clock.time()
+                if left <= 0:
+                    break
+                self.cond.wait(self.clock.real(min(left, 0.2)))
+            got = min(n, self.claw_seq - start)
+            if got < 2:
+                return None
+            recent = list(self.claw_hist)[-got:]
+        return {k: sum(c[k] for c in recent) / len(recent) for k in ("x", "y", "z", "down")}
+
+    def wait_resume(self):
+        """Called by motion while the safety stop is active."""
+        self.action("paused: hand near the arm")
+        while self.abort.is_set():
+            if self.cancel.is_set() or self._quit.is_set():
+                return False
+            self.clock.sleep(0.1)
+        return not self.cancel.is_set()
+
+    # ================================================================ build
+    def busy(self):
+        return self._worker is not None and self._worker.is_alive()
+
+    def start_build(self, design):
+        if self.busy():
+            return False, [{"level": "error", "msg": "already building"}]
+        steps, probs = make_plan(design, self.cfg, self.catalog, self.body)
+        errors = [p for p in probs if p["level"] == "error"]
+        if errors:
+            return False, probs
+        self.cancel.clear()
+        self.plan_steps = steps
+        with self.lock:
+            self.status.update({"step": 0, "total": len(steps), "result": None, "prompt": None,
+                                "steps": [{"label": f"{s['color']} {self.catalog.types[s['type']]['name']}"
+                                                    + (f" on top ({s['z']:.1f} cm up)" if s['z'] > 0 else ""),
+                                           "state": "todo"} for s in steps]})
+        self._worker = threading.Thread(target=self._run, args=(steps,), daemon=True)
+        self._worker.start()
+        return True, probs
+
+    def stop_build(self):
+        self.cancel.set()
+        self.abort.set()
+        self.arm.stop()
+        self.log("stop requested")
+
+    def _step_state(self, i, state):
+        with self.lock:
+            self.status["steps"][i]["state"] = state
+            self.status["step"] = i + (1 if state == "done" else 0)
+
+    def _run(self, steps):
+        self.set_mode("building", "starting")
+        self.log(f"build started: {len(steps)} blocks")
+        result = "done"
+        try:
+            self.motion.home()
+            for i, st in enumerate(steps):
+                if self.cancel.is_set():
+                    result = "stopped"
+                    break
+                self._step_state(i, "active")
+                r = self._do_step(i, st)
+                self._step_state(i, "done" if r == "ok" else "failed")
+                if r == "cancel":
+                    result = "stopped"
+                    break
+                if r != "ok":
+                    result = "incomplete"
+            if not self.cancel.is_set():
+                self.abort.clear()
+                self.action("going home")
+                self.motion.home()
+        except Exception as e:      # keep the UI alive and tell the user
+            result = "error"
+            self.log(f"error: {e!r}")
+        finally:
+            if self.cancel.is_set() and not self.safety_stopped:
+                self.abort.clear()
+            with self.lock:
+                self.status["result"] = result
+                self.status["prompt"] = None
+            self.set_mode("done" if result == "done" else "idle", f"build {result}")
+            self.log(f"build {result}")
+
+    def _find_supply(self, st, exclude=()):
+        best = None
+        for b in self.active_blocks():
+            if b.get("type") != st["type"] or b["color"] != st["color"] or b["id"] in exclude:
+                continue
+            if b.get("zone") == "build" or not b.get("zone"):
+                continue
+            if not self._pick_reachable(b):
+                continue
+            d = math.hypot(b["x"] - st["x"], b["y"] - st["y"])
+            if best is None or d < best[0]:
+                best = (d, b)
+        return best[1] if best else None
+
+    def _pick_reachable(self, b):
+        key = (b["id"], round(b["x"]), round(b["y"]))
+        cache = self.__dict__.setdefault("_reach_cache", {})
+        if key not in cache:
+            h = self.catalog.height(b["type"])
+            z0 = float(b.get("z") or 0.0)
+            cache[key] = all(self.body.solve([b["x"], b["y"], z])["reachable"]
+                             for z in (self.cfg.grasp_z(z0, h), self.cfg.hover_z(z0, h)))
+        return cache[key]
+
+    def _wait_for_block(self, st):
+        """Ask for a block (sim person, or a prompt in the UI) and wait for it."""
+        msg = f"Place a {st['color']} {self.catalog.types[st['type']]['name'].lower()} in a supply zone"
+        with self.lock:
+            self.status["prompt"] = msg
+        self.set_mode("waiting", msg)
+        self.log(msg)
+        self.action("moving out of the way")
+        self.motion._move(list(self.cfg["park"]))       # stay clear of the person's hand
+        self.action(msg)
+        if self.feeder is not None:
+            self.feeder.request(st["type"], st["color"])
+        t0 = self.clock.time()
+        while not self.cancel.is_set():
+            b = self._find_supply(st)
+            if b is not None:
+                self.clock.sleep(1.0)                 # let the hand clear first
+                b = self._find_supply(st)
+                if b is not None and not self.safety_stopped:
+                    with self.lock:
+                        self.status["prompt"] = None
+                    self.set_mode("building")
+                    return b
+            if self.clock.time() - t0 > 300:
+                return None
+            self.clock.sleep(0.3)
+        return None
+
+    def _do_step(self, i, st):
+        tried = set()
+        for attempt in range(3):
+            if self.cancel.is_set():
+                return "cancel"
+            blk = self._find_supply(st, tried) or self._wait_for_block(st)
+            if blk is None:
+                return "cancel" if self.cancel.is_set() else "fail"
+            yaw = blk.get("yaw", 0.0)
+            g_pick = self.motion.grip_for(yaw, st["grip"], st["yaw"], st["type"])
+            # the same block axis at the place: fingers along target yaw (+90 if gripping across d)
+            across_d = abs(fold180(g_pick - yaw - 90)) < 45
+            g_place = fold180(st["yaw"] + (90.0 if across_d else 0.0))
+            self.action(f"step {i + 1}: picking {st['color']} {st['type']}")
+            self.log("pick", step=i, block=blk["id"], x=round(blk["x"], 1), y=round(blk["y"], 1))
+            r = self.motion.pick(blk, g_pick)
+            if r == "abort":
+                return "cancel"
+            if r != "ok":
+                self.log(f"pick {r}; retrying")
+                tried.add(blk["id"])
+                continue
+            self.action(f"step {i + 1}: placing" + (f" on top, {st['z']:.1f} cm up" if st["z"] > 0 else ""))
+            r = self.motion.place(st, g_place)
+            if r == "abort":
+                return "cancel"
+            if r != "ok":
+                return "fail"
+            self.clock.sleep(0.4)
+            ok, err = self._verify(st)
+            self.log("placed" if ok else "placed (not confirmed)", step=i, err=err)
+            return "ok"
+        return "fail"
+
+    def _verify(self, st):
+        best = None
+        for b in self.active_blocks():
+            if b["color"] != st["color"] or b.get("type") != st["type"]:
+                continue
+            x, y = b["x"], b["y"]
+            if b.get("px") is not None and hasattr(self.source, "calib"):
+                p = self.source.calib.pixel_to_table(*b["px"], st["z"] + st["h"])
+                if p:
+                    x, y = p
+            d = math.hypot(x - st["x"], y - st["y"])
+            best = d if best is None else min(best, d)
+        return (best is not None and best < 1.5), (None if best is None else round(best, 2))
+
+    def close(self):
+        self.cancel.set()
+        self._quit.set()
+        self._vision.join(timeout=1)

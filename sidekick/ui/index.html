@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidekick Builder</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --panel: #ffffff; --ink: #1d1f22; --muted: #6b7078; --line: #e2ded6;
+    --accent: #1f6feb; --ok: #2e9d4f; --warn: #c98a12; --err: #d23c34;
+    --red: #d9443a; --blue: #2f7fd6; --green: #43b74a; --yellow: #f2c230; --wood: #d8b98a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--ink); }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line);
+           background: var(--panel); }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+  header .tag { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: #eef3ff; color: var(--accent); }
+  header .grow { flex: 1; }
+  main { display: grid; grid-template-columns: 320px minmax(0, 1fr) 420px; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 1250px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+              margin: 0 0 10px; font-weight: 600; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tabs button { flex: 1; }
+  button { font: inherit; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 7px 12px;
+           cursor: pointer; color: var(--ink); }
+  button:hover { border-color: #c9c3b8; }
+  button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  button.danger { background: var(--err); color: #fff; border-color: var(--err); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .preset { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+  .preset .row { display: flex; align-items: center; gap: 8px; }
+  .preset h3 { margin: 0; font-size: 15px; flex: 1; }
+  .preset p { margin: 4px 0 8px; color: var(--muted); font-size: 13px; }
+  .preset svg { width: 100%; height: 90px; background: #faf8f4; border-radius: 6px; }
+  .badge { font-size: 11px; padding: 1px 7px; border-radius: 99px; }
+  .badge.ok { background: #e6f5ea; color: var(--ok); } .badge.bad { background: #fde8e7; color: var(--err); }
+  .palette { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .chip { border: 1px solid var(--line); border-radius: 8px; padding: 6px; text-align: center; cursor: grab;
+          user-select: none; touch-action: none; background: #fff; }
+  .chip svg { width: 100%; height: 46px; pointer-events: none; }
+  .chip .n { font-size: 12px; color: var(--muted); }
+  .chip.empty { opacity: .35; cursor: not-allowed; }
+  #editorWrap { position: relative; }
+  #editor { width: 100%; background: #fbfaf7; border: 1px solid var(--line); border-radius: 10px; touch-action: none; }
+  #topview { width: 100%; background: #fbfaf7; border: 1px solid var(--line); border-radius: 10px; margin-top: 8px; }
+  .toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; align-items: center; }
+  .toolbar .sp { flex: 1; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .problems { list-style: none; padding: 0; margin: 8px 0 0; }
+  .problems li { padding: 5px 8px; border-radius: 6px; margin-bottom: 4px; font-size: 13px; }
+  .problems li.error { background: #fde8e7; color: #9e2a24; }
+  .problems li.warn { background: #fdf3e0; color: #8a5d08; }
+  .problems li.okmsg { background: #e6f5ea; color: #1f6b37; }
+  #live { width: 100%; border-radius: 8px; border: 1px solid var(--line); background: #eee; display: block; }
+  .status { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #aaa; }
+  .prompt { background: #fff6d6; border: 1px solid #f0d77a; border-radius: 8px; padding: 10px; font-weight: 600;
+            margin: 8px 0; display: none; }
+  .safety { background: #fde8e7; border: 1px solid #f2b2ae; color: #9e2a24; border-radius: 8px; padding: 10px;
+            font-weight: 700; margin: 8px 0; display: none; }
+  ol.steps { padding-left: 20px; margin: 6px 0; }
+  ol.steps li { margin: 3px 0; }
+  ol.steps li.active { font-weight: 700; color: var(--accent); }
+  ol.steps li.done { color: var(--ok); }
+  ol.steps li.failed { color: var(--err); }
+  pre.log { background: #f7f5f1; border-radius: 8px; padding: 8px; font-size: 12px; height: 140px; overflow: auto;
+            margin: 6px 0 0; white-space: pre-wrap; }
+  .row2 { display: flex; gap: 8px; }
+  .row2 > * { flex: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sidekick Builder</h1>
+  <span class="tag" id="modeTag">connecting…</span>
+  <span class="grow"></span>
+  <span class="hint">Pick a preset or draw a build from the front. Blocks drop by gravity; the arm works out the rest.</span>
+</header>
+
+<main>
+  <!-- left: presets / palette -->
+  <section class="panel">
+    <div class="tabs">
+      <button id="tabPresets" class="on">Presets</button>
+      <button id="tabDesign">Designer</button>
+    </div>
+    <div id="presetList"></div>
+    <div id="paletteBox" style="display:none">
+      <h2>Blocks you own</h2>
+      <div class="palette" id="palette"></div>
+      <p class="hint">Drag a block onto the build area. Click a block to select it.</p>
+    </div>
+  </section>
+
+  <!-- middle: front-view editor -->
+  <section class="panel">
+    <h2>Front view <span class="hint" id="dims"></span></h2>
+    <div id="editorWrap"><svg id="editor"></svg></div>
+    <div class="toolbar">
+      <button id="btnRot" disabled>Rotate (R)</button>
+      <button id="btnBack" disabled>Push back</button>
+      <button id="btnFront" disabled>Bring forward</button>
+      <button id="btnDel" disabled>Delete (Del)</button>
+      <span class="sp"></span>
+      <button id="btnClear">Clear</button>
+    </div>
+    <h2>Top view <span class="hint">(depth slots; front at the bottom)</span></h2>
+    <svg id="topview"></svg>
+    <ul class="problems" id="problems"></ul>
+    <div class="toolbar">
+      <span class="hint" id="countHint"></span>
+      <span class="sp"></span>
+      <button id="btnSimReset" style="display:none">Put blocks in supply</button>
+      <button class="primary" id="btnBuild">Build this</button>
+    </div>
+  </section>
+
+  <!-- right: live view + status -->
+  <section class="panel">
+    <h2>Live view</h2>
+    <img id="live" alt="live view">
+    <div class="status"><span class="dot" id="dot"></span><b id="mode">idle</b><span id="action" class="hint"></span></div>
+    <div class="safety" id="safety">Paused: hand near the arm. It resumes by itself 1 s after the area is clear.</div>
+    <div class="prompt" id="prompt"></div>
+    <div class="row2">
+      <button class="danger" id="btnStop">Stop</button>
+      <button id="btnPoke" style="display:none">Sim: reach in</button>
+    </div>
+    <h2 style="margin-top:14px">Build steps</h2>
+    <ol class="steps" id="steps"></ol>
+    <h2>Log</h2>
+    <pre class="log" id="log"></pre>
+  </section>
+</main>
+
+<script>
+const COLORS = { red: "#d9443a", blue: "#2f7fd6", green: "#43b74a", yellow: "#f2c230", wood: "#d8b98a" };
+const S = 30;              // editor pixels per cm
+const SNAP = 0.5;          // cm
+let INFO = null, TYPES = {};
+let design = { blocks: [] };
+let zs = {};               // index -> settled bottom z from the server
+let problems = [];
+let selected = null;
+let drag = null;
+const $ = id => document.getElementById(id);
+
+function api(path, body) {
+  return fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" },
+                                                  body: JSON.stringify(body) }).then(r => r.json());
+}
+const svgEl = (tag, attrs) => { const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+
+function footprint(b) {
+  const [w, d] = TYPES[b.type].size;
+  return (b.rot % 180 === 90) ? [d, w] : [w, d];
+}
+
+// front-view outline of a block, origin at its bottom-left, in px
+function shapePath(type, rot, w, h, s) {
+  const t = TYPES[type], W = w * s, H = h * s;
+  if (rot % 180 === 0 && t.shape === "roof") return `M0 ${-0} L${W / 2} ${-H} L${W} 0 Z`;
+  if (rot % 180 === 0 && t.shape === "arch") {
+    const leg = W * 0.22, r = (W - 2 * leg) / 2, ch = Math.min(H * 0.6, r);
+    return `M0 0 L0 ${-H} L${W} ${-H} L${W} 0 L${W - leg} 0 A ${r} ${ch} 0 0 0 ${leg} 0 Z`;
+  }
+  if (t.shape === "cylinder") {
+    const ry = Math.min(4, W * 0.12);
+    return `M0 0 L0 ${-H + ry} A ${W / 2} ${ry} 0 0 1 ${W} ${-H + ry} L${W} 0 Z`;
+  }
+  return `M0 0 L0 ${-H} L${W} ${-H} L${W} 0 Z`;
+}
+
+function drawBlock(g, b, x, z, s, opts = {}) {
+  const [fx] = footprint(b);
+  const h = TYPES[b.type].size[2];
+  const grp = svgEl("g", { transform: `translate(${x * s},${opts.base - z * s})` });
+  const p = svgEl("path", { d: shapePath(b.type, b.rot || 0, fx, h, s), fill: COLORS[b.color] || "#999",
+    stroke: opts.stroke || "rgba(0,0,0,.35)", "stroke-width": opts.sw || 1, opacity: opts.opacity ?? 1 });
+  grp.appendChild(p);
+  if (opts.label) {
+    const t = svgEl("text", { x: fx * s / 2, y: -h * s / 2 + 4, "text-anchor": "middle", "font-size": 11,
+      fill: "rgba(0,0,0,.6)" });
+    t.textContent = opts.label; grp.appendChild(t);
+  }
+  g.appendChild(grp);
+  return grp;
+}
+
+// ------------------------------------------------------------ presets
+function renderPresets() {
+  const box = $("presetList"); box.innerHTML = "";
+  for (const p of INFO.presets) {
+    const div = document.createElement("div"); div.className = "preset";
+    div.innerHTML = `<div class="row"><h3>${p.name}</h3><span class="badge ${p.ok ? "ok" : "bad"}">` +
+      `${p.ok ? "ready" : "check"}</span></div><p>${p.desc}</p>`;
+    const W = INFO.grid.width, H = INFO.grid.max_height, s = 90 / (H + 1);
+    const svg = svgEl("svg", { viewBox: `0 0 ${W * s} ${(H + 1) * s}` });
+    const g = svgEl("g", {}); svg.appendChild(g);
+    g.appendChild(svgEl("line", { x1: 0, x2: W * s, y1: H * s, y2: H * s, stroke: "#bbb" }));
+    [...p.blocks].sort((a, b) => (b.depth || 0) - (a.depth || 0))
+      .forEach(b => drawBlock(g, b, b.x, b.z_hint || 0, s, { base: H * s, opacity: b.depth ? .55 : 1 }));
+    div.appendChild(svg);
+    const row = document.createElement("div"); row.className = "row2"; row.style.marginTop = "8px";
+    const load = document.createElement("button"); load.textContent = "Open in designer";
+    load.onclick = () => { design = JSON.parse(JSON.stringify({ blocks: p.blocks })); selected = null; showTab("design"); check(); };
+    const go = document.createElement("button"); go.className = "primary"; go.textContent = "Build this";
+    go.disabled = !p.ok;
+    go.onclick = () => { design = JSON.parse(JSON.stringify({ blocks: p.blocks })); check(); build(); };
+    row.append(load, go); div.appendChild(row);
+    if (!p.ok) {
+      const ul = document.createElement("ul"); ul.className = "problems";
+      p.problems.filter(x => x.level === "error").slice(0, 2).forEach(x => {
+        const li = document.createElement("li"); li.className = "error"; li.textContent = x.msg; ul.appendChild(li); });
+      div.appendChild(ul);
+    }
+    box.appendChild(div);
+  }
+}
+
+// ------------------------------------------------------------ palette
+function used(type, color) { return design.blocks.filter(b => b.type === type && b.color === color).length; }
+
+function renderPalette() {
+  const box = $("palette"); box.innerHTML = "";
+  for (const t of INFO.catalog.types) for (const [color, n] of Object.entries(t.colors)) {
+    const left = n - used(t.id, color);
+    const chip = document.createElement("div"); chip.className = "chip" + (left <= 0 ? " empty" : "");
+    const [w, , h] = t.size, s = 40 / Math.max(w, h, 3);
+    const svg = svgEl("svg", { viewBox: `${-4} ${-h * s - 4} ${w * s + 8} ${h * s + 8}` });
+    drawBlock(svg, { type: t.id, color, rot: 0 }, 0, 0, s, { base: 0 });
+    chip.appendChild(svg);
+    const lab = document.createElement("div"); lab.innerHTML = `${t.name} <span class="n">${color} · ${left} left</span>`;
+    chip.appendChild(lab);
+    if (left > 0) chip.addEventListener("pointerdown", e => startDrag(e, { type: t.id, color, rot: 0, depth: 0 }, null));
+    box.appendChild(chip);
+  }
+}
+
+// ------------------------------------------------------------ editor
+function editorSize() { return { W: INFO.grid.width * S, H: (INFO.grid.max_height + 1.5) * S, base: (INFO.grid.max_height + 1.5) * S - 10 }; }
+
+function renderEditor() {
+  const svg = $("editor"); const { W, H, base } = editorSize();
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.innerHTML = "";
+  for (let x = 0; x <= INFO.grid.width + 1e-6; x += 1.5)
+    svg.appendChild(svgEl("line", { x1: x * S, x2: x * S, y1: 0, y2: base, stroke: Math.abs(x % 3) < 1e-6 ? "#e8e4dc" : "#f1eee8" }));
+  for (let z = 0; z <= INFO.grid.max_height + 1e-6; z += 3)
+    svg.appendChild(svgEl("line", { x1: 0, x2: W, y1: base - z * S, y2: base - z * S, stroke: "#eee9e1" }));
+  svg.appendChild(svgEl("line", { x1: 0, x2: W, y1: base - INFO.grid.max_height * S, y2: base - INFO.grid.max_height * S,
+    stroke: "#e3b9b6", "stroke-dasharray": "4 4" }));
+  svg.appendChild(svgEl("rect", { x: 0, y: base, width: W, height: H - base, fill: "#d9d3c7" }));
+  const bad = new Set(problems.filter(p => p.level === "error" && p.index !== null).map(p => p.index));
+  const order = design.blocks.map((b, i) => i).sort((a, c) => (design.blocks[c].depth || 0) - (design.blocks[a].depth || 0));
+  for (const i of order) {
+    if (drag && drag.index === i) continue;
+    const b = design.blocks[i];
+    const z = zs[i] !== undefined ? zs[i] : (b.z_hint || 0);
+    const el = drawBlock(svg, b, b.x, z, S, { base, opacity: b.depth ? .5 : 1,
+      stroke: i === selected ? "#1f6feb" : bad.has(i) ? "#d23c34" : "rgba(0,0,0,.35)",
+      sw: i === selected || bad.has(i) ? 3 : 1, label: b.depth ? "back" : "" });
+    el.style.cursor = "grab";
+    el.addEventListener("pointerdown", e => { selected = i; updateToolbar(); startDrag(e, { ...b }, i); });
+  }
+  if (drag && drag.pos) {
+    drawBlock(svg, drag.block, drag.pos.x, drag.pos.z, S, { base, opacity: .7, stroke: "#1f6feb", sw: 2 });
+  }
+  renderTop();
+}
+
+function renderTop() {
+  const svg = $("topview"); const slots = INFO.grid.slots, ds = INFO.grid.depth_slot;
+  const W = INFO.grid.width * S, H = Math.max(slots * ds, 3) * S * 0.6 + 10, s = S * 0.6;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.innerHTML = "";
+  for (let k = 0; k <= slots; k++)
+    svg.appendChild(svgEl("line", { x1: 0, x2: W, y1: H - 5 - k * ds * s, y2: H - 5 - k * ds * s, stroke: "#e6e1d8" }));
+  design.blocks.forEach((b, i) => {
+    const [fx, fy] = footprint(b); const y0 = (b.depth || 0) * ds;
+    const r = TYPES[b.type].shape === "cylinder";
+    const attrs = { fill: COLORS[b.color], stroke: i === selected ? "#1f6feb" : "rgba(0,0,0,.35)",
+      "stroke-width": i === selected ? 3 : 1, opacity: .85 };
+    if (r) svg.appendChild(svgEl("ellipse", { cx: (b.x + fx / 2) * S, cy: H - 5 - (y0 + fy / 2) * s,
+      rx: fx / 2 * S, ry: fy / 2 * s, ...attrs }));
+    else svg.appendChild(svgEl("rect", { x: b.x * S, y: H - 5 - (y0 + fy) * s, width: fx * S, height: fy * s, ...attrs }));
+  });
+}
+
+function svgPoint(e) {
+  const svg = $("editor"); const r = svg.getBoundingClientRect(); const { W, H, base } = editorSize();
+  const px = (e.clientX - r.left) * W / r.width, py = (e.clientY - r.top) * H / r.height;
+  return { inside: px >= 0 && px <= W && py >= 0 && py <= H, x: px / S, z: (base - py) / S };
+}
+
+function startDrag(e, block, index) {
+  e.preventDefault();
+  const [fx] = footprint(block); const h = TYPES[block.type].size[2];
+  drag = { block, index, pos: null, fx, h };
+  window.addEventListener("pointermove", onMove); window.addEventListener("pointerup", onUp, { once: true });
+  onMove(e);
+}
+function onMove(e) {
+  if (!drag) return;
+  const p = svgPoint(e);
+  if (!p.inside) { drag.pos = null; renderEditor(); return; }
+  let x = Math.round((p.x - drag.fx / 2) / SNAP) * SNAP;
+  x = Math.max(0, Math.min(INFO.grid.width - drag.fx, x));
+  drag.pos = { x, z: Math.max(0, p.z - drag.h / 2) };
+  renderEditor();
+}
+function onUp() {
+  window.removeEventListener("pointermove", onMove);
+  const d = drag; drag = null;
+  if (d && d.pos) {
+    const nb = { ...d.block, x: d.pos.x, z_hint: Math.round(d.pos.z * 10) / 10 };
+    if (d.index === null) { design.blocks.push(nb); selected = design.blocks.length - 1; }
+    else design.blocks[d.index] = nb;
+    check();
+  } else renderEditor();
+  updateToolbar(); renderPalette();
+}
+
+function updateToolbar() {
+  const has = selected !== null && design.blocks[selected];
+  ["btnRot", "btnDel"].forEach(id => $(id).disabled = !has);
+  $("btnBack").disabled = !has || (design.blocks[selected].depth || 0) + 1 >= INFO.grid.slots;
+  $("btnFront").disabled = !has || !(design.blocks[selected].depth > 0);
+  $("countHint").textContent = `${design.blocks.length} block${design.blocks.length === 1 ? "" : "s"}`;
+}
+
+let checkTimer = null;
+function check() {
+  clearTimeout(checkTimer);
+  checkTimer = setTimeout(async () => {
+    const r = await api("/api/check", { design });
+    problems = r.problems; zs = {};
+    for (const k in r.z) zs[+k] = r.z[k];
+    design.blocks.forEach((b, i) => { if (zs[i] !== undefined) b.z_hint = zs[i]; });
+    renderProblems(); renderEditor(); renderPalette(); updateToolbar();
+  }, 120);
+  renderEditor(); updateToolbar();
+}
+
+function renderProblems() {
+  const ul = $("problems"); ul.innerHTML = "";
+  if (!design.blocks.length) return;
+  if (!problems.length) { const li = document.createElement("li"); li.className = "okmsg";
+    li.textContent = "Looks buildable."; ul.appendChild(li); }
+  for (const p of problems) {
+    const li = document.createElement("li"); li.className = p.level;
+    li.textContent = (p.index !== null && p.index !== undefined ? `Block ${p.index + 1}: ` : "") + p.msg;
+    ul.appendChild(li);
+  }
+  $("btnBuild").disabled = problems.some(p => p.level === "error") || !design.blocks.length;
+}
+
+// ------------------------------------------------------------ actions
+$("btnRot").onclick = () => { const b = design.blocks[selected]; b.rot = ((b.rot || 0) + 90) % 180; check(); };
+$("btnBack").onclick = () => { design.blocks[selected].depth = (design.blocks[selected].depth || 0) + 1; check(); };
+$("btnFront").onclick = () => { design.blocks[selected].depth = Math.max(0, (design.blocks[selected].depth || 0) - 1); check(); };
+$("btnDel").onclick = () => { design.blocks.splice(selected, 1); selected = null; check(); };
+$("btnClear").onclick = () => { design = { blocks: [] }; selected = null; problems = []; check(); };
+window.addEventListener("keydown", e => {
+  if (selected === null || e.target.tagName === "INPUT") return;
+  if (e.key === "r" || e.key === "R") $("btnRot").click();
+  if (e.key === "Delete" || e.key === "Backspace") $("btnDel").click();
+});
+async function build() {
+  const r = await api("/api/build", { design });
+  if (!r.ok) { problems = r.problems || []; renderProblems(); alert((r.problems || []).map(p => p.msg).join("\n") || "Can't build"); }
+}
+$("btnBuild").onclick = build;
+$("btnStop").onclick = () => api("/api/stop", {});
+$("btnSimReset").onclick = () => api("/api/sim/reset", { design });
+$("btnPoke").onclick = () => api("/api/sim/poke", {});
+
+function showTab(t) {
+  $("tabPresets").classList.toggle("on", t === "presets"); $("tabDesign").classList.toggle("on", t === "design");
+  $("presetList").style.display = t === "presets" ? "" : "none";
+  $("paletteBox").style.display = t === "design" ? "" : "none";
+}
+$("tabPresets").onclick = () => showTab("presets");
+$("tabDesign").onclick = () => showTab("design");
+
+// ------------------------------------------------------------ live status
+const MODE_COLORS = { idle: "#9aa0a6", building: "#2e9d4f", waiting: "#e3b20f", done: "#1f6feb", stopped: "#d23c34" };
+async function poll() {
+  try {
+    const s = await api("/api/status");
+    $("mode").textContent = s.safety ? "paused" : s.mode;
+    $("action").textContent = s.action || "";
+    $("dot").style.background = s.safety ? MODE_COLORS.stopped : (MODE_COLORS[s.mode] || "#999");
+    $("safety").style.display = s.safety ? "block" : "none";
+    $("prompt").style.display = s.prompt ? "block" : "none";
+    $("prompt").textContent = s.prompt || "";
+    $("steps").innerHTML = (s.steps || []).map(x => `<li class="${x.state}">${x.label}</li>`).join("");
+    const log = $("log"); const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    log.textContent = (s.log || []).join("\n"); if (atEnd) log.scrollTop = log.scrollHeight;
+  } catch (e) { $("mode").textContent = "disconnected"; }
+  setTimeout(poll, 400);
+}
+function liveLoop() {
+  const img = new Image();
+  img.onload = () => { $("live").src = img.src; setTimeout(liveLoop, 150); };
+  img.onerror = () => setTimeout(liveLoop, 1000);
+  img.src = "/api/frame.jpg?t=" + Date.now();
+}
+
+(async function init() {
+  INFO = await api("/api/info");
+  INFO.catalog.types.forEach(t => TYPES[t.id] = t);
+  $("modeTag").textContent = INFO.sim ? "simulator" : "real arm";
+  $("dims").textContent = `(${INFO.grid.width} cm wide, up to ${INFO.grid.max_height} cm tall, ${INFO.grid.slots} depth slot${INFO.grid.slots > 1 ? "s" : ""})`;
+  if (INFO.sim) { $("btnSimReset").style.display = ""; $("btnPoke").style.display = ""; }
+  renderPresets(); renderPalette(); renderEditor(); updateToolbar(); renderProblems();
+  poll(); liveLoop();
+})();
+</script>
+</body>
+</html>
