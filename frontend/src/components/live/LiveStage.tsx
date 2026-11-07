@@ -7,6 +7,7 @@ import { useBackend, useLiveStatus } from '../../backend'
 import { useToast } from '../Toast'
 import { BlockScene } from '../build/BlockScene'
 import { CameraFeed } from './CameraFeed'
+import { AgentDock, type ArmAgent } from '../talk/AgentDock'
 
 type Phase = 'running' | 'paused' | 'safety' | 'halted' | 'failed' | 'done'
 
@@ -16,12 +17,15 @@ type Props = {
   onDone: (run: Run) => void
   onRestart: (build: Build) => void
   starting?: boolean
+  /** The arm agent dock (talk/type to steer the build). */
+  agentOpen: boolean
+  onAgentOpen: (open: boolean) => void
 }
 
 /** Everything on this screen comes from the robot server's status for THIS run.
  *  If the server restarted or a different build is running, it says so instead
  *  of showing someone else's progress. */
-export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
+export function LiveStage({ run, onBack, onDone, onRestart, starting, agentOpen, onAgentOpen }: Props) {
   const { status, error } = useLiveStatus(!!run)
   const { info } = useBackend()
   const toast = useToast()
@@ -110,9 +114,28 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
               ? 'Paused: hand near the arm. Resumes 1 s after the area is clear.'
               : mine.prompt ?? mine.action ?? ''
 
+  const need = () => {
+    if (!run || stale || !mine) throw new Error('not connected to this build')
+    return run.runId
+  }
+  const agent: ArmAgent = {
+    phase,
+    live: !stale && !!mine?.busy,
+    sim: !!info?.sim,
+    done: doneCount,
+    total: steps.length || run.build.blocks.length,
+    current: steps[curIdx]?.label,
+    pause: () => api.pause(need()),
+    resume: () => api.resume(need()),
+    stop: () => api.stop(need()),
+    poke: () => api.simPoke(),
+    again: () => onRestart(run.build),
+  }
+
   return (
+    <>
     <div className="grid h-full min-h-0 gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1fr)_320px] lg:overflow-hidden lg:p-6">
-      <section className="flex min-h-0 flex-col gap-3">
+      <section className="flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1">
         <div className="flex items-center justify-between gap-3">
           <div>
             <span className="label">Build phase · {info?.sim ? 'simulator' : 'robot view'}</span>
@@ -181,6 +204,9 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
             </button>
           </div>
         </div>
+
+        {/* Talk or type to steer the build: opens right under the controls */}
+        <AgentDock open={agentOpen} onOpenChange={onAgentOpen} agent={agent} className="mt-auto pt-1" />
       </section>
 
       <aside className="flex min-h-0 flex-col gap-3">
@@ -237,6 +263,7 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
         </div>
       </aside>
     </div>
+    </>
   )
 }
 

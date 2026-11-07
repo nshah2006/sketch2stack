@@ -15,7 +15,6 @@ import { SketchStage } from '../components/sketch/SketchStage'
 import { GeneratingScreen } from '../components/anim/GeneratingScreen'
 import { ChooseStage } from '../components/build/ChooseStage'
 import { LiveStage } from '../components/live/LiveStage'
-import { TalkPanel } from '../components/talk/TalkPanel'
 
 const wide = () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches
 const RUN_KEY = 's2s.run'
@@ -199,7 +198,14 @@ export function Workspace() {
   }
 
   const onNav = (t: NavTarget) => {
-    if (t === 'talk') setTalk((x) => !x)
+    if (t === 'talk') {
+      // The agent drives the arm, so it lives in the build phase.
+      if (!run) return toast('Talk is for the build phase. Start a build first.')
+      if (stage !== 'live') {
+        setStage('live')
+        setTalk(true)
+      } else setTalk((x) => !x)
+    }
     else if (t === 'labs') setLabs(true)
     else setStage(t)
   }
@@ -208,7 +214,7 @@ export function Workspace() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      <LeftRail stage={stage} hasBuilds={builds.length > 0 || !!run} onNav={onNav} />
+      <LeftRail canTalk={!!run} talkOpen={talk && stage === 'live'} stage={stage} hasBuilds={builds.length > 0 || !!run} onNav={onNav} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-4 lg:px-6">
@@ -288,6 +294,8 @@ export function Workspace() {
                   onDone={doneBuilding}
                   onRestart={(b) => startBuild(b)}
                   starting={starting}
+                  agentOpen={talk}
+                  onAgentOpen={setTalk}
                 />
               )}
             </motion.div>
@@ -296,8 +304,7 @@ export function Workspace() {
       </div>
 
       <ProjectsDrawer open={drawer} onClose={() => setDrawer(false)} activeId={projectId} onAction={onProject} onNew={newProject} />
-      <BottomNav stage={stage} hasBuilds={builds.length > 0 || !!run} onNav={onNav} />
-      <TalkPanel open={talk} onOpenChange={setTalk} />
+      <BottomNav canTalk={!!run} talkOpen={talk && stage === 'live'} stage={stage} hasBuilds={builds.length > 0 || !!run} onNav={onNav} />
       <LabsModal open={labs} onClose={() => setLabs(false)} />
     </div>
   )
