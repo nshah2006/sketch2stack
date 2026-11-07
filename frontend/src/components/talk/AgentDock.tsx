@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ChevronDown, Mic } from 'lucide-react'
 import { PromptInput } from '@/components/ui/ai-chat-input'
-import { AgentOrb, VoiceBars, useVoiceLevels } from '@/components/voice/VoiceKit'
+import { AgentOrb, type VoiceLevels } from '@/components/voice/VoiceKit'
 import { uid } from '../../store/storage'
 
 /** What the agent can see and do during a build. */
@@ -50,8 +50,18 @@ function interpret(text: string, a: ArmAgent): { reply: string; run?: () => unkn
 
 const CHIPS = ['How far along?', 'Pause', 'Resume', 'Reach in (sim)', 'Build again']
 
-export function AgentDock({ open, onOpenChange, agent, className }: { open: boolean; onOpenChange: (o: boolean) => void; agent: ArmAgent; className?: string }) {
-  const voice = useVoiceLevels()
+type DockProps = {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  agent: ArmAgent
+  /** Shared with the listening card the page shows beside the camera. */
+  voice: VoiceLevels
+  onListeningChange?: (listening: boolean) => void
+  className?: string
+}
+
+/** Chat + controls for the arm. The big listening orb is drawn by the page, to the right of the camera. */
+export function AgentDock({ open, onOpenChange, agent, voice, onListeningChange, className }: DockProps) {
   const [recording, setRecording] = useState(false)
   const [thinking, setThinking] = useState(false)
   const [text, setText] = useState('')
@@ -93,6 +103,7 @@ export function AgentDock({ open, onOpenChange, agent, className }: { open: bool
   // Hands-free: when you stop talking, what you said is sent.
   const onRecordingChange = (r: boolean) => {
     setRecording(r)
+    onListeningChange?.(r)
     if (r) setPendingVoice(false)
     if (!r && textRef.current.trim()) send(textRef.current)
   }
@@ -137,7 +148,8 @@ export function AgentDock({ open, onOpenChange, agent, className }: { open: bool
           >
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.12 } }}>
               <div className="flex items-center justify-between px-4 pt-3">
-                <div className="flex items-baseline gap-2">
+                <div className="flex items-center gap-2">
+                  <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening={recording} busy={thinking} glow={false} className="h-7 w-7" />
                   <span className="text-sm font-semibold">Arm agent</span>
                   <AnimatePresence mode="wait" initial={false}>
                     <motion.span
@@ -157,11 +169,8 @@ export function AgentDock({ open, onOpenChange, agent, className }: { open: bool
                 </button>
               </div>
 
-              <div className="grid grid-cols-[84px_minmax(0,1fr)] items-center gap-3 px-4 pt-2 sm:grid-cols-[104px_minmax(0,1fr)]">
-                <div className="flex flex-col items-center">
-                  <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening={recording} busy={thinking} className="aspect-square w-full" />
-                </div>
-                <div ref={logRef} className="h-24 space-y-1.5 overflow-y-auto pr-1 text-sm sm:h-28">
+              <div className="px-4 pt-2">
+                <div ref={logRef} className="h-24 space-y-1.5 overflow-y-auto pr-1 text-sm">
                   {msgs.map((m) => (
                     <motion.p
                       key={m.id}
@@ -183,8 +192,6 @@ export function AgentDock({ open, onOpenChange, agent, className }: { open: bool
                   )}
                 </div>
               </div>
-
-              <VoiceBars bandsRef={voice.bandsRef} kickRef={voice.kickRef} active={recording} count={40} className="mt-1 px-4" />
 
               <div className="flex gap-1.5 overflow-x-auto px-4 pb-2 pt-1">
                 {CHIPS.filter((c) => agent.sim || !c.includes('sim')).map((c) => (

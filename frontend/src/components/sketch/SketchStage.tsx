@@ -31,6 +31,7 @@ export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, 
   const [promptOpen, setPromptOpen] = useState(false)
   const [listening, setListening] = useState(false)
   const voice = useVoiceLevels()
+  const sideW = typeof window !== 'undefined' && window.innerWidth < 640 ? 132 : 220
 
   const commit = (s: Stroke) => {
     onStrokes([...strokes, s])
@@ -92,33 +93,10 @@ export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, 
       </header>
 
       {/* Board */}
-      <div className="relative grid min-h-[260px] flex-1 place-items-center" style={{ containerType: 'size' }}>
+      <div className="flex min-h-[260px] flex-1">
+      <div className="relative grid min-w-0 flex-1 place-items-center" style={{ containerType: 'size' }}>
         <div className="panel dot-grid relative aspect-[4/3] overflow-hidden" style={{ width: 'min(100cqw, 100cqh * 4 / 3)' }}>
           <SketchCanvas strokes={strokes} onCommit={commit} tool={tool} width={width} />
-
-          {/* Same agent look as the Talk pop-up: sphere + bars while you dictate */}
-          <AnimatePresence>
-            {listening && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0, transition: { duration: 0.2 } }}
-                className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-ink/45 backdrop-blur-[2px]"
-              >
-                <motion.div
-                  initial={{ scale: 0.85, y: 12 }}
-                  animate={{ scale: 1, y: 0 }}
-                  exit={{ scale: 0.92, y: 6 }}
-                  transition={{ type: 'spring', duration: 0.45, bounce: 0.2 }}
-                  className="flex flex-col items-center gap-2 rounded-3xl border border-pink/30 bg-surface/85 px-8 pb-5 pt-6 shadow-glow"
-                >
-                  <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening className="h-32 w-32" />
-                  <span className="label !text-pink-soft">Listening… describe your build</span>
-                  <VoiceBars bandsRef={voice.bandsRef} kickRef={voice.kickRef} active count={28} />
-                </motion.div>
-              </motion.div>
-            )}
-          </AnimatePresence>
 
           <AnimatePresence>
             {empty && (
@@ -168,6 +146,28 @@ export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, 
             </ToolBtn>
           </div>
         </div>
+      </div>
+
+        {/* The agent appears to the RIGHT of the board while you dictate, never on top of it */}
+        <AnimatePresence initial={false}>
+          {listening && (
+            <motion.aside
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: sideW + 16, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ type: 'spring', duration: 0.5, bounce: 0.1 }}
+              className="shrink-0 overflow-hidden"
+              aria-live="polite"
+            >
+              <div className="ml-4 flex h-full flex-col items-center justify-center gap-3 rounded-2xl border border-pink/30 bg-surface p-4 shadow-glow" style={{ width: sideW }}>
+                <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening className="aspect-square w-full max-w-[160px]" />
+                <span className="label text-center !text-pink-soft">Listening…</span>
+                <p className="text-center text-xs text-muted">Describe your build. Tap the orb button to stop.</p>
+                <VoiceBars bandsRef={voice.bandsRef} kickRef={voice.kickRef} active count={sideW > 160 ? 24 : 14} />
+              </div>
+            </motion.aside>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Describe (text or voice) + Generate */}

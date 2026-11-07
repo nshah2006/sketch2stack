@@ -267,11 +267,50 @@ def test_build(cfg, body):
                    f"{r['virtual_s']:.0f} s sim time")
 
 
+def test_dictation(cfg):
+    import copy
+    from . import webapi
+    from .catalog import Catalog, DEFAULT_CATALOG
+    import os
+    os.environ["SIDEKICK_NO_LLM"] = "1"          # the rule parser only; no network in tests
+    d = copy.deepcopy(DEFAULT_CATALOG)           # orange = natural wood 10, colored 2 (as in blocks.json)
+    for t in d["types"]:
+        t["colors"] = {"orange": 10, **{c: 2 for c in t["colors"] if c != "orange"}}
+    cat = Catalog(d)
+
+    def ask(text, build=None):
+        r = webapi.dictate(text, build, cfg, cat)
+        return r, (r["builds"][0]["blocks"] if r["builds"] else [])
+
+    r, b1 = ask("put a plank and a roof on top")
+    stacked = len(b1) == 2 and {x["type"] for x in b1} == {"plank", "roof"} and \
+        max(b1, key=lambda x: x["y"])["type"] == "roof"
+    _, b2 = ask("two cubes with a roof on top")
+    house = len(b2) == 3 and sum(x["type"] == "roof" for x in b2) == 1
+    _, b3 = ask("make a house")
+    preset = len(b3) == 3 and b3[0]["color"] == "red"
+    r4, b4 = ask("three blue cubes")             # no blue cubes in the catalog: refuse, don't invent
+    r5, b5 = ask("make it taller", r["builds"][0])
+    edit = len(b5) > len(b1) or "taller" in r5["reply"].lower()
+    cap = all(sum(1 for x in b if x["color"] == "orange" and x["type"] == "cube") <= 10 for b in (b1, b2, b3, b4, b5))
+    _, b6 = ask("put a tall cylinder with a cube on top and then a plank and then a roof over the plank")
+    kinds = sorted(x["type"] for x in b6)
+    chain = kinds == ["cube", "cyl_tall", "plank", "roof"]       # "the plank" is the same plank, not a 2nd one
+    _, b7 = ask("put the planks and roof on top of the cube")
+    cube = next((x for x in b7 if x["type"] == "cube"), None)
+    group = cube is not None and len(b7) == 4 and all(x["y"] >= cube["y"] + cube["size"][1] - 0.01
+                                                      for x in b7 if x["type"] != "cube")
+    ok = stacked and house and preset and not b4 and edit and cap and chain and group
+    os.environ.pop("SIDEKICK_NO_LLM", None)
+    return _report("dictation (stack, house, preset first, stock, edit)", ok,
+                   f"stacked={stacked} house={house} preset={preset} refuse={not b4} edit={edit} chain={chain} group={group}")
+
+
 def run(cfg, quick=False):
     cfg = C.load(overrides={"use_sim": True})
     print("Sidekick self-test (no hardware)\n", flush=True)
     results = [test_calibration(cfg), test_markers(cfg), test_firmware(cfg), test_planner(cfg),
-               test_classify(cfg)]
+               test_classify(cfg), test_dictation(cfg)]
     if not quick:
         with tempfile.TemporaryDirectory() as d:
             ok, body = test_body(cfg, d)

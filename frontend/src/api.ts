@@ -79,6 +79,8 @@ export const api = {
   status: (signal?: AbortSignal) => call<Status>('/api/status', undefined, { signal, timeout: 4000 }),
   generate: (strokes: Stroke[], prompt: string, requestId: number, signal?: AbortSignal) =>
     call<{ request_id: number; builds: Build[] }>('/api/generate', { strokes, prompt, request_id: requestId }, { signal, timeout: 60000 }),
+  dictate: (text: string, build: Build | null, requestId: number, signal?: AbortSignal) =>
+    call<{ request_id: number; reply: string; builds: Build[] }>('/api/dictate', { text, build, request_id: requestId }, { signal, timeout: 30000 }),
   check: (build: Build) => call<{ problems: Problem[]; stability: number }>('/api/check', { build }),
   build: (build: Build) => call<{ ok: boolean; run_id: number; server_id: string; problems: Problem[] }>('/api/build', { build }, { timeout: 30000 }),
   stop: (runId: number) => call<{ ok: boolean }>('/api/stop', { run_id: runId }),

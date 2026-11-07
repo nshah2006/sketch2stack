@@ -416,6 +416,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
     const expand = () => {
       setIsSmoothResize(false)
       setExpanded(true)
+      textareaRef.current?.focus({ preventScroll: true })
     }
 
     // --- Voice recording ---

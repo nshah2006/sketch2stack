@@ -8,6 +8,7 @@ import { useToast } from '../Toast'
 import { BlockScene } from '../build/BlockScene'
 import { CameraFeed } from './CameraFeed'
 import { AgentDock, type ArmAgent } from '../talk/AgentDock'
+import { AgentOrb, VoiceBars, useVoiceLevels } from '@/components/voice/VoiceKit'
 
 type Phase = 'running' | 'paused' | 'safety' | 'halted' | 'failed' | 'done'
 
@@ -32,6 +33,8 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting, agentOpen,
   const [pending, setPending] = useState(false)
   const reported = useRef<number | null>(null)
   const listRef = useRef<HTMLOListElement>(null)
+  const voice = useVoiceLevels()
+  const [listening, setListening] = useState(false)
 
   const stale: null | 'restarted' | 'other' =
     !run || !status ? null : status.server_id !== run.serverId ? 'restarted' : status.run_id !== run.runId ? 'other' : null
@@ -206,11 +209,33 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting, agentOpen,
         </div>
 
         {/* Talk or type to steer the build: opens right under the controls */}
-        <AgentDock open={agentOpen} onOpenChange={onAgentOpen} agent={agent} className="mt-auto pt-1" />
+        <AgentDock open={agentOpen} onOpenChange={onAgentOpen} agent={agent} voice={voice} onListeningChange={setListening} className="mt-auto pt-1" />
       </section>
 
       <aside className="flex min-h-0 flex-col gap-3">
-        <div className="panel relative aspect-[4/3] overflow-hidden dot-grid">
+        {/* While you talk, the agent shows up here, beside the camera, not over it */}
+        <AnimatePresence initial={false}>
+          {listening && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ type: 'spring', duration: 0.45, bounce: 0.1 }}
+              className="shrink-0 overflow-hidden"
+              aria-live="polite"
+            >
+              <div className="flex items-center gap-4 rounded-2xl border border-pink/30 bg-surface p-4 shadow-glow">
+                <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening className="h-24 w-24 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <span className="label !text-pink-soft">Listening…</span>
+                  <p className="mt-1 text-xs text-muted">Try “pause”, “resume” or “how far along?”</p>
+                  <VoiceBars bandsRef={voice.bandsRef} kickRef={voice.kickRef} active count={22} className="mt-2 justify-start" />
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <div className="panel relative aspect-[4/3] shrink-0 overflow-hidden dot-grid">
           <span className="label absolute left-3 top-3 z-10">Target</span>
           <BlockScene
             blocks={run.build.blocks}

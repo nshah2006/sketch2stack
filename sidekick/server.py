@@ -85,6 +85,12 @@ class App:
                                      self.cfg, self.catalog, self.body)
         return {"request_id": data.get("request_id"), "builds": builds}
 
+    def dictate(self, data):
+        with self._gen_lock:          # tile-based edits are CPU heavy; share the generate lock
+            out = webapi.dictate(str(data.get("text", ""))[:300], data.get("build"),
+                                 self.cfg, self.catalog, self.body)
+        return {"request_id": data.get("request_id"), **out}
+
     # ---------------------------------------------------------------- running
     def build(self, data):
         design = self._design(data)
@@ -232,6 +238,8 @@ def make_handler(app):
                 return self._send(200, app.check(data))
             if path == "/api/generate":
                 return self._send(200, app.generate(data))
+            if path == "/api/dictate":
+                return self._send(200, app.dictate(data))
             if path == "/api/build":
                 ok, body = app.build(data)
                 return self._send(200 if ok else 409, body)
