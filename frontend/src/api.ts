@@ -82,12 +82,13 @@ export const api = {
   dictate: (text: string, build: Build | null, requestId: number, signal?: AbortSignal) =>
     call<{ request_id: number; reply: string; builds: Build[] }>('/api/dictate', { text, build, request_id: requestId }, { signal, timeout: 30000 }),
   check: (build: Build) => call<{ problems: Problem[]; stability: number }>('/api/check', { build }),
-  build: (build: Build) => call<{ ok: boolean; run_id: number; server_id: string; problems: Problem[] }>('/api/build', { build }, { timeout: 30000 }),
+  build: (build: Build, owner?: string) =>
+    call<{ ok: boolean; run_id: number; server_id: string; problems: Problem[] }>('/api/build', { build, owner }, { timeout: 30000 }),
   stop: (runId: number) => call<{ ok: boolean }>('/api/stop', { run_id: runId }),
   pause: (runId: number) => call<{ ok: boolean }>('/api/pause', { run_id: runId }),
   resume: (runId: number) => call<{ ok: boolean }>('/api/resume', { run_id: runId }),
   simPoke: () => call<{ ok: boolean }>('/api/sim/poke', {}),
-  currentRun: () => call<{ server_id: string; run_id: number; busy: boolean; build: Build | null }>('/api/run'),
+  currentRun: () => call<{ server_id: string; run_id: number; busy: boolean; build: Build | null; owner?: string | null }>('/api/run'),
 }
 
 export const FRAME_URL = '/api/frame.jpg'

@@ -7,6 +7,8 @@ import { useBackend, useLiveStatus } from '../../backend'
 import { useToast } from '../Toast'
 import { BlockScene } from '../build/BlockScene'
 import { CameraFeed } from './CameraFeed'
+import { AgentDock, type ArmAgent } from '../talk/AgentDock'
+import { useVoiceLevels } from '@/components/voice/VoiceKit'
 
 type Phase = 'running' | 'paused' | 'safety' | 'halted' | 'failed' | 'done'
 
@@ -16,18 +18,22 @@ type Props = {
   onDone: (run: Run) => void
   onRestart: (build: Build) => void
   starting?: boolean
+  /** The arm agent dock (talk/type to steer the build). */
+  agentOpen: boolean
+  onAgentOpen: (open: boolean) => void
 }
 
 /** Everything on this screen comes from the robot server's status for THIS run.
  *  If the server restarted or a different build is running, it says so instead
  *  of showing someone else's progress. */
-export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
+export function LiveStage({ run, onBack, onDone, onRestart, starting, agentOpen, onAgentOpen }: Props) {
   const { status, error } = useLiveStatus(!!run)
   const { info } = useBackend()
   const toast = useToast()
   const [pending, setPending] = useState(false)
   const reported = useRef<number | null>(null)
   const listRef = useRef<HTMLOListElement>(null)
+  const voice = useVoiceLevels()
 
   const stale: null | 'restarted' | 'other' =
     !run || !status ? null : status.server_id !== run.serverId ? 'restarted' : status.run_id !== run.runId ? 'other' : null
@@ -110,9 +116,28 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
               ? 'Paused: hand near the arm. Resumes 1 s after the area is clear.'
               : mine.prompt ?? mine.action ?? ''
 
+  const need = () => {
+    if (!run || stale || !mine) throw new Error('not connected to this build')
+    return run.runId
+  }
+  const agent: ArmAgent = {
+    phase,
+    live: !stale && !!mine?.busy,
+    sim: !!info?.sim,
+    done: doneCount,
+    total: steps.length || run.build.blocks.length,
+    current: steps[curIdx]?.label,
+    pause: () => api.pause(need()),
+    resume: () => api.resume(need()),
+    stop: () => api.stop(need()),
+    poke: () => api.simPoke(),
+    again: () => onRestart(run.build),
+  }
+
   return (
+    <>
     <div className="grid h-full min-h-0 gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1fr)_320px] lg:overflow-hidden lg:p-6">
-      <section className="flex min-h-0 flex-col gap-3">
+      <section className="flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1">
         <div className="flex items-center justify-between gap-3">
           <div>
             <span className="label">Build phase · {info?.sim ? 'simulator' : 'robot view'}</span>
@@ -149,7 +174,7 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
 
         <CameraFeed status={stale ? 'offline' : phase} action={action} />
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2">
           {!stale && (phase === 'running' || phase === 'safety') ? (
             <button className="btn-ghost" onClick={() => act(api.pause)} disabled={pending}>
               <Pause size={15} /> Pause
@@ -165,10 +190,10 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
           )}
           {info?.sim && !stale && phase !== 'done' && (
             <button className="btn-ghost" onClick={() => api.simPoke().catch(() => {})} title="Simulated person reaches toward the arm">
-              <Hand size={15} /> Sim: reach in
+              <Hand size={15} /> <span className="whitespace-nowrap"><span className="hidden sm:inline">Sim: </span>reach in</span>
             </button>
           )}
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
             <span className="font-mono text-xs tabular-nums text-muted">
               {doneCount}/{steps.length || run.build.blocks.length}
             </span>
@@ -181,10 +206,13 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
             </button>
           </div>
         </div>
+
+        {/* Talk or type to steer the build: opens right under the controls */}
+        <AgentDock open={agentOpen} onOpenChange={onAgentOpen} agent={agent} voice={voice} className="mt-auto pt-1" />
       </section>
 
       <aside className="flex min-h-0 flex-col gap-3">
-        <div className="panel relative aspect-[4/3] overflow-hidden dot-grid">
+        <div className="panel relative aspect-[4/3] shrink-0 overflow-hidden dot-grid">
           <span className="label absolute left-3 top-3 z-10">Target</span>
           <BlockScene
             blocks={run.build.blocks}
@@ -237,6 +265,7 @@ export function LiveStage({ run, onBack, onDone, onRestart, starting }: Props) {
         </div>
       </aside>
     </div>
+    </>
   )
 }
 

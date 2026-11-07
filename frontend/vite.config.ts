@@ -1,10 +1,13 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
   plugins: [react()],
+  resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   // the Python server (python -m sidekick ui) answers /api
-  server: { proxy: { '/api': 'http://127.0.0.1:8000' } },
+  // SIDEKICK_URL=http://127.0.0.1:8001 npm run dev  when port 8000 is taken
+  server: { proxy: { '/api': process.env.SIDEKICK_URL ?? 'http://127.0.0.1:8000' } },
   build: {
     rollupOptions: {
       output: {

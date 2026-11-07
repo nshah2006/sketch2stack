@@ -1,4 +1,5 @@
 import type { Config } from 'tailwindcss'
+import animate from 'tailwindcss-animate'
 
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
@@ -21,11 +22,12 @@ export default {
         display: ['"Bricolage Grotesque"', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
+      transitionDuration: { 400: '400ms' },
       boxShadow: {
         glow: '0 0 24px rgba(255,46,147,0.35)',
         'glow-lg': '0 0 48px rgba(255,46,147,0.45)',
       },
     },
   },
-  plugins: [],
+  plugins: [animate],
 } satisfies Config
