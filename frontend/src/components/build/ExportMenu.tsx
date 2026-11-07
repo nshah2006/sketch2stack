@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { FileJson, ImageDown, Link2, Share2 } from 'lucide-react'
+import { Copy, FileJson, ImageDown, Share2 } from 'lucide-react'
 import type { Build } from '../../types'
 import { buildSteps } from '../../mocks/builds'
 import { useToast } from '../Toast'
@@ -26,7 +26,16 @@ export function ExportMenu({ build, projectId }: { build: Build; projectId: stri
     {
       icon: ImageDown,
       label: 'Snapshot PNG',
-      run: () => toast('PNG export coming soon'),
+      run: () => {
+        // The 3D view keeps its drawing buffer, so the canvas can be saved as-is.
+        const canvas = document.querySelector<HTMLCanvasElement>('[data-build-view] canvas')
+        if (!canvas) return toast('Nothing to snapshot yet')
+        const a = document.createElement('a')
+        a.href = canvas.toDataURL('image/png')
+        a.download = `${build.id}.png`
+        a.click()
+        toast('Snapshot saved')
+      },
     },
     {
       icon: FileJson,
@@ -43,12 +52,12 @@ export function ExportMenu({ build, projectId }: { build: Build; projectId: stri
       },
     },
     {
-      icon: Link2,
-      label: 'Copy share link',
+      icon: Copy,
+      label: 'Copy build (JSON)',
       run: async () => {
         try {
-          await navigator.clipboard.writeText(`${location.origin}/share/${projectId}/${build.id}`)
-          toast('Link copied (placeholder URL)')
+          await navigator.clipboard.writeText(JSON.stringify({ project: projectId, build }, null, 2))
+          toast('Build copied to clipboard')
         } catch {
           toast('Clipboard blocked')
         }

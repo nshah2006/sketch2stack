@@ -13,6 +13,8 @@ cd frontend && npm install && npm run build
 
 # 2b. or develop with hot reload (proxies /api to the server)
 cd frontend && npm run dev                       # http://localhost:5173
+# if port 8000 is taken, run the server with --port 8001 and:
+#   SIDEKICK_URL=http://127.0.0.1:8001 npm run dev
 ```
 
 ## What's real and what's still mock
@@ -25,7 +27,10 @@ cd frontend && npm run dev                       # http://localhost:5173
 | Build this | `POST /api/build` → a `run_id` |
 | Live view, steps, pickup prompts, safety pause | `GET /api/status`, `GET /api/frame.jpg` |
 | Pause / Resume / E-STOP / Build again | `/api/pause`, `/api/resume`, `/api/stop`, `/api/build` |
-| Auth, Talk panel, Labs, share link | still mock |
+| Talk (Build live only) | the arm agent dock: pause / resume / stop / status / reach-in / build again, by voice or text (keyword rules in `AgentDock.tsx`) |
+| Describe box on an empty board | `POST /api/dictate` (words -> blocks) |
+| Export | snapshot PNG, step list JSON, copy build JSON (all real) |
+| Auth, Labs, account settings | still mock |
 
 ## Stale-state rules
 - Every server start has a `server_id`; a stored run from an older server is dropped.

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Eraser, PenLine, Redo2, ShieldCheck, Sparkles, Trash2, Undo2, Wand2 } from 'lucide-react'
+import { Eraser, PenLine, Redo2, Sparkles, Trash2, Undo2 } from 'lucide-react'
 import { PromptInput } from '@/components/ui/ai-chat-input'
 import { AgentOrb, VoiceBars, useVoiceLevels } from '@/components/voice/VoiceKit'
 import type { Stroke } from '../../types'
@@ -19,10 +19,6 @@ type Props = {
 
 const WIDTHS = [3, 6, 11]
 
-// UI only for now: the generator doesn't take style/detail yet.
-const STYLES = ['Faithful', 'Creative', 'Sturdy']
-const STYLE_ICONS = { Faithful: PenLine, Creative: Wand2, Sturdy: ShieldCheck }
-const DETAIL = ['Few blocks', 'Balanced', 'Detailed']
 
 export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, projectName, onRename }: Props) {
   const [tool, setTool] = useState<'pen' | 'eraser'>('pen')
@@ -153,13 +149,14 @@ export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, 
           {listening && (
             <motion.aside
               initial={{ width: 0, opacity: 0 }}
-              animate={{ width: sideW + 16, opacity: 1 }}
+              animate={{ width: sideW + 40, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
               transition={{ type: 'spring', duration: 0.5, bounce: 0.1 }}
-              className="shrink-0 overflow-hidden"
+              className="flex shrink-0 items-center overflow-hidden"
               aria-live="polite"
             >
-              <div className="ml-4 flex h-full flex-col items-center justify-center gap-3 rounded-2xl border border-pink/30 bg-surface p-4 shadow-glow" style={{ width: sideW }}>
+              {/* ml = gap to the board, mr = buffer from the screen edge when Projects is closed */}
+              <div className="ml-4 mr-6 flex flex-col items-center justify-center gap-3 rounded-2xl border border-pink/30 bg-surface px-4 py-6 shadow-glow" style={{ width: sideW }}>
                 <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening className="aspect-square w-full max-w-[160px]" />
                 <span className="label text-center !text-pink-soft">Listening…</span>
                 <p className="text-center text-xs text-muted">Describe your build. Tap the orb button to stop.</p>
@@ -193,9 +190,7 @@ export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, 
               onSubmit={() => canGenerate && onGenerate()}
               clearOnSubmit={false}
               placeholder="Describe it, or tap the mic and say it"
-              models={STYLES}
-              modelIcons={STYLE_ICONS}
-              efforts={DETAIL}
+              allowAttachments={false}
               collapsedWidth={440}
               expandedWidth={680}
             />

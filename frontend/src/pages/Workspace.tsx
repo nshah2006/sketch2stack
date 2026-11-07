@@ -6,6 +6,7 @@ import { useProjects } from '../store/projects'
 import { load as loadStored, save as saveStored } from '../store/storage'
 import { api, ApiError } from '../api'
 import { useBackend } from '../backend'
+import { useAuth } from '../auth/AuthContext'
 import { useToast } from '../components/Toast'
 import { BottomNav, LeftRail, Stepper, type NavTarget } from '../components/layout/Nav'
 import { ProjectsDrawer, type ProjectAction } from '../components/layout/ProjectsDrawer'
@@ -22,6 +23,9 @@ const RUN_KEY = 's2s.run'
 export function Workspace() {
   const { upsert } = useProjects()
   const { serverId } = useBackend()
+  const { user } = useAuth()
+  // A run is "mine" if I started it (older servers send no owner: treat as shared).
+  const isMine = (owner?: string | null) => !owner || owner === user?.email
   const toast = useToast()
   const [stage, setStageRaw] = useState<Stage>('sketch')
   const [projectId, setProjectId] = useState<string | null>(null)
@@ -58,7 +62,7 @@ export function Workspace() {
   const adoptServerRun = async () => {
     try {
       const cur = await api.currentRun()
-      if (cur.busy && cur.build) {
+      if (cur.busy && cur.build && isMine(cur.owner)) {
         setRun({ runId: cur.run_id, serverId: cur.server_id, build: cur.build, startedAt: Date.now(), projectId: null })
         return true
       }
@@ -73,7 +77,7 @@ export function Workspace() {
     api
       .currentRun()
       .then((cur) => {
-        if (!cur.busy || !cur.build) return
+        if (!cur.busy || !cur.build || !isMine(cur.owner)) return
         if (!run || run.runId !== cur.run_id || run.serverId !== cur.server_id)
           setRun({ runId: cur.run_id, serverId: cur.server_id, build: cur.build, startedAt: Date.now(), projectId: null })
         if (stageRef.current === 'sketch') setStage('live') // page reloaded mid-build: go straight back to it
@@ -162,16 +166,17 @@ export function Workspace() {
     startingRef.current = true
     setStarting(true)
     try {
-      const res = await api.build(build)
+      const res = await api.build(build, user?.email)
       setRun({ runId: res.run_id, serverId: res.server_id, build, startedAt: Date.now(), projectId: pid.current })
       setStage('live')
+      setTalk(true) // the arm agent opens at the bottom of Build live
     } catch (e) {
       const err = e as ApiError
       if (err.status === 409 && /already building/.test(err.message)) {
         if (await adoptServerRun()) {
           toast('The arm is still working on another build. Showing it.')
           setStage('live')
-        } else toast(err.message)
+        } else toast('The arm is busy with someone else’s build. Try again when it finishes.')
       } else toast(err.message)
     } finally {
       startingRef.current = false

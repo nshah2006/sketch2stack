@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ChevronDown, Mic } from 'lucide-react'
 import { PromptInput } from '@/components/ui/ai-chat-input'
-import { AgentOrb, type VoiceLevels } from '@/components/voice/VoiceKit'
+import { AgentOrb, VoiceBars, type VoiceLevels } from '@/components/voice/VoiceKit'
 import { uid } from '../../store/storage'
 
 /** What the agent can see and do during a build. */
@@ -60,7 +60,7 @@ type DockProps = {
   className?: string
 }
 
-/** Chat + controls for the arm. The big listening orb is drawn by the page, to the right of the camera. */
+/** The one Talk in the build phase: a bottom dock with the moving agent orb, chat, chips and voice. */
 export function AgentDock({ open, onOpenChange, agent, voice, onListeningChange, className }: DockProps) {
   const [recording, setRecording] = useState(false)
   const [thinking, setThinking] = useState(false)
@@ -148,8 +148,7 @@ export function AgentDock({ open, onOpenChange, agent, voice, onListeningChange,
           >
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.12 } }}>
               <div className="flex items-center justify-between px-4 pt-3">
-                <div className="flex items-center gap-2">
-                  <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening={recording} busy={thinking} glow={false} className="h-7 w-7" />
+                <div className="flex items-baseline gap-2">
                   <span className="text-sm font-semibold">Arm agent</span>
                   <AnimatePresence mode="wait" initial={false}>
                     <motion.span
@@ -169,8 +168,12 @@ export function AgentDock({ open, onOpenChange, agent, voice, onListeningChange,
                 </button>
               </div>
 
-              <div className="px-4 pt-2">
-                <div ref={logRef} className="h-24 space-y-1.5 overflow-y-auto pr-1 text-sm">
+              <div className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-3 px-4 pt-2 sm:grid-cols-[112px_minmax(0,1fr)]">
+                <div className="flex flex-col items-center gap-1">
+                  <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening={recording} busy={thinking} className="aspect-square w-full" />
+                  <VoiceBars bandsRef={voice.bandsRef} kickRef={voice.kickRef} active={recording} count={14} className="h-6" />
+                </div>
+                <div ref={logRef} className="h-28 space-y-1.5 overflow-y-auto pr-1 text-sm">
                   {msgs.map((m) => (
                     <motion.p
                       key={m.id}
