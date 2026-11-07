@@ -273,9 +273,9 @@ def test_dictation(cfg):
     from .catalog import Catalog, DEFAULT_CATALOG
     import os
     os.environ["SIDEKICK_NO_LLM"] = "1"          # the rule parser only; no network in tests
-    d = copy.deepcopy(DEFAULT_CATALOG)           # orange = natural wood 10, colored 2 (as in blocks.json)
+    d = copy.deepcopy(DEFAULT_CATALOG)           # natural = unpainted wood 10, painted colors 2 (as in blocks.json)
     for t in d["types"]:
-        t["colors"] = {"orange": 10, **{c: 2 for c in t["colors"] if c != "orange"}}
+        t["colors"] = {"natural": 10, **{c: 2 for c in t["colors"] if c != "natural"}}
     cat = Catalog(d)
 
     def ask(text, build=None):
@@ -292,7 +292,7 @@ def test_dictation(cfg):
     r4, b4 = ask("three blue cubes")             # no blue cubes in the catalog: refuse, don't invent
     r5, b5 = ask("make it taller", r["builds"][0])
     edit = len(b5) > len(b1) or "taller" in r5["reply"].lower()
-    cap = all(sum(1 for x in b if x["color"] == "orange" and x["type"] == "cube") <= 10 for b in (b1, b2, b3, b4, b5))
+    cap = all(sum(1 for x in b if x["color"] == "natural" and x["type"] == "cube") <= 10 for b in (b1, b2, b3, b4, b5))
     _, b6 = ask("put a tall cylinder with a cube on top and then a plank and then a roof over the plank")
     kinds = sorted(x["type"] for x in b6)
     chain = kinds == ["cube", "cyl_tall", "plank", "roof"]       # "the plank" is the same plank, not a 2nd one
@@ -300,17 +300,43 @@ def test_dictation(cfg):
     cube = next((x for x in b7 if x["type"] == "cube"), None)
     group = cube is not None and len(b7) == 4 and all(x["y"] >= cube["y"] + cube["size"][1] - 0.01
                                                       for x in b7 if x["type"] != "cube")
-    ok = stacked and house and preset and not b4 and edit and cap and chain and group
+    _, bl = ask("a cube to the left of a plank")
+    _, br = ask("a cube to the right of a plank")
+    xof = lambda bs, t: next(x["x"] for x in bs if x["type"] == t)
+    lr = len(bl) == len(br) == 2 and xof(bl, "cube") < xof(bl, "plank") and xof(br, "cube") > xof(br, "plank")
+    ok = stacked and house and preset and not b4 and edit and cap and chain and group and lr
     os.environ.pop("SIDEKICK_NO_LLM", None)
     return _report("dictation (stack, house, preset first, stock, edit)", ok,
-                   f"stacked={stacked} house={house} preset={preset} refuse={not b4} edit={edit} chain={chain} group={group}")
+                   f"stacked={stacked} house={house} preset={preset} refuse={not b4} edit={edit} chain={chain} group={group} left_right={lr}")
+
+
+def test_speech(cfg):
+    import os
+    from . import speech
+    body, ctype = speech.multipart(b"AUDIO", "audio/mp4;codecs=x", {"model": "whisper-1"})
+    ok = (b'filename="speech.mp4"' in body and b"AUDIO" in body and "boundary=" in ctype
+          and speech.extension("audio/webm;codecs=opus") == "webm" and speech.extension("???") == "webm")
+    os.environ["SIDEKICK_NO_LLM"] = "1"          # no key path: a clear 503, no network
+    try:
+        speech.transcribe(b"x", "audio/webm")
+        nokey = False
+    except speech.SpeechError as e:
+        nokey = e.status == 503
+    try:
+        speech.transcribe(b"x" * (speech.MAX_BYTES + 1), "audio/webm")
+        big = False
+    except speech.SpeechError as e:
+        big = e.status == 413
+    os.environ.pop("SIDEKICK_NO_LLM", None)
+    return _report("voice upload (multipart, size cap, no-key message)", ok and nokey and big,
+                   f"multipart={ok} no_key_503={nokey} too_big_413={big}")
 
 
 def run(cfg, quick=False):
     cfg = C.load(overrides={"use_sim": True})
     print("Sidekick self-test (no hardware)\n", flush=True)
     results = [test_calibration(cfg), test_markers(cfg), test_firmware(cfg), test_planner(cfg),
-               test_classify(cfg), test_dictation(cfg)]
+               test_classify(cfg), test_dictation(cfg), test_speech(cfg)]
     if not quick:
         with tempfile.TemporaryDirectory() as d:
             ok, body = test_body(cfg, d)
