@@ -50,10 +50,14 @@ class Builder:
         self._clear_since = None
         self.mode = "idle"
         self.status = {"mode": "idle", "action": "", "step": 0, "total": 0, "prompt": None,
-                       "steps": [], "log": [], "safety": False, "fps": 0.0, "result": None}
+                       "steps": [], "log": [], "safety": False, "fps": 0.0, "result": None,
+                       "run_id": 0, "paused": False}
         self.plan_steps = []
         self._fps_t, self._fps_n = time.monotonic(), 0
         self._worker = None
+        self._start_lock = threading.Lock()      # two Build clicks can't both start a run
+        self.run_id = 0                          # every build gets a new id; the UI ignores other runs
+        self.paused = False                      # user pause (separate from the safety stop)
         self.motion = Motion(cfg, arm, body, catalog, self.read_claw, self.active_blocks,
                              self.abort, self.wait_resume, log=self.log)
         stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -151,7 +155,8 @@ class Builder:
                 self._clear_since = obs.t
             elif obs.t - self._clear_since >= self.cfg["resume_after"]:
                 self.safety_stopped = False
-                self.abort.clear()
+                if not self.paused:
+                    self.abort.clear()
                 with self.lock:
                     self.status["safety"] = False
                 self.log("clear: resuming")
@@ -179,8 +184,8 @@ class Builder:
         return claw_tip(avg, self.cfg["marker_to_fingertip"])
 
     def wait_resume(self):
-        """Called by motion while the safety stop is active."""
-        self.action("paused: hand near the arm")
+        """Called by motion while the safety stop or a user pause is active."""
+        self.action("paused" if self.paused and not self.safety_stopped else "paused: hand near the arm")
         while self.abort.is_set():
             if self.cancel.is_set() or self._quit.is_set():
                 return False
@@ -192,23 +197,51 @@ class Builder:
         return self._worker is not None and self._worker.is_alive()
 
     def start_build(self, design):
-        if self.busy():
-            return False, [{"level": "error", "msg": "already building"}]
-        steps, probs = make_plan(design, self.cfg, self.catalog, self.body)
-        errors = [p for p in probs if p["level"] == "error"]
-        if errors:
-            return False, probs
-        self.cancel.clear()
-        if not self.safety_stopped:
-            self.abort.clear()               # a leftover Stop must not block the next build
-        self.plan_steps = steps
+        """-> (ok, problems, run_id)"""
+        with self._start_lock:
+            if self.busy():
+                return False, [{"level": "error", "msg": "the arm is already building; stop it first"}], self.run_id
+            steps, probs = make_plan(design, self.cfg, self.catalog, self.body)
+            errors = [p for p in probs if p["level"] == "error"]
+            if errors:
+                return False, probs, self.run_id
+            self.cancel.clear()
+            self.paused = False
+            if not self.safety_stopped:
+                self.abort.clear()               # a leftover Stop must not block the next build
+            self.run_id += 1
+            self.plan_steps = steps
+            with self.lock:
+                self.status.update({"run_id": self.run_id, "step": 0, "total": len(steps), "result": None,
+                                    "prompt": None, "paused": False,
+                                    "log": [],     # each build starts with a fresh log
+                                    "steps": [{"label": self._step_label(s), "state": "todo",
+                                               "index": s["index"]} for s in steps]})
+            self._worker = threading.Thread(target=self._run, args=(steps, self.run_id), daemon=True)
+            self._worker.start()
+            return True, probs, self.run_id
+
+    def pause(self):
+        if not self.busy() or self.paused:
+            return False
+        self.paused = True
+        self.abort.set()
+        self.arm.stop()
         with self.lock:
-            self.status.update({"step": 0, "total": len(steps), "result": None, "prompt": None,
-                                "log": [],     # each build starts with a fresh log
-                                "steps": [{"label": self._step_label(s), "state": "todo"} for s in steps]})
-        self._worker = threading.Thread(target=self._run, args=(steps,), daemon=True)
-        self._worker.start()
-        return True, probs
+            self.status["paused"] = True
+        self.log("paused")
+        return True
+
+    def resume(self):
+        if not self.paused:
+            return False
+        self.paused = False
+        with self.lock:
+            self.status["paused"] = False
+        if not self.safety_stopped:
+            self.abort.clear()
+        self.log("resumed")
+        return True
 
     def _step_label(self, s):
         name = self.catalog.types[s["type"]]["name"]
@@ -231,6 +264,7 @@ class Builder:
             return
         self.cancel.set()
         self.abort.set()
+        self.paused = False
         self.log("stop requested")
 
     def _step_state(self, i, state):
@@ -238,7 +272,7 @@ class Builder:
             self.status["steps"][i]["state"] = state
             self.status["step"] = i + (1 if state == "done" else 0)
 
-    def _run(self, steps):
+    def _run(self, steps, run_id=None):
         self.set_mode("building", "starting")
         self.log(f"build started: {len(steps)} blocks")
         result = "done"
@@ -257,18 +291,21 @@ class Builder:
                 if r != "ok":
                     result = "incomplete"
             if not self.cancel.is_set():
-                self.abort.clear()
+                if not self.safety_stopped and not self.paused:
+                    self.abort.clear()
                 self.action("going home")
                 self.motion.home()
         except Exception as e:      # keep the UI alive and tell the user
             result = "error"
             self.log(f"error: {e!r}")
         finally:
+            self.paused = False
             if self.cancel.is_set() and not self.safety_stopped:
                 self.abort.clear()
             with self.lock:
                 self.status["result"] = result
                 self.status["prompt"] = None
+                self.status["paused"] = False
             self.set_mode("done" if result == "done" else "idle", f"build {result}")
             self.log(f"build {result}")
 

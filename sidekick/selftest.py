@@ -235,7 +235,7 @@ def sim_build(cfg, body, preset_id, seed=2, speed=10, reach_rate=0.0, timeout=90
     w.fill_supply(presets.needed(design)[:2])        # the rest is brought by the simulated person
     with tempfile.TemporaryDirectory() as d:
         b = Builder(cfg, cat, w, arm, body, feeder=w.person, log_dir=d)
-        started, probs = b.start_build(design)
+        started, probs, _ = b.start_build(design)
         t0 = time.time()
         while started and b.busy() and time.time() - t0 < timeout:
             time.sleep(0.3)

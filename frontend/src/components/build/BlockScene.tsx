@@ -8,8 +8,12 @@ import { BLOCK_HEX } from '../../mocks/builds'
 const reduceMotion =
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
+/** Arches and roofs turned a quarter turn: build them unturned, then rotate the mesh. */
+const turned = (b: Block) => b.rot === 90 && (b.shape === 'arch' || b.shape === 'triangle')
+
 function useBlockGeometry(block: Block) {
-  const [w, h, d] = block.size
+  const [sx, h, sz] = block.size
+  const [w, d] = turned(block) ? [sz, sx] : [sx, sz]
   return useMemo(() => {
     switch (block.shape) {
       case 'cylinder':
@@ -89,7 +93,7 @@ function BlockMesh({ block, delay, animate, highlight, ghost }: BlockMeshProps) 
 
   return (
     <group ref={ref} position={target}>
-      <mesh geometry={geo} castShadow receiveShadow>
+      <mesh geometry={geo} castShadow receiveShadow rotation={[0, turned(block) ? Math.PI / 2 : 0, 0]}>
         <meshStandardMaterial
           ref={mat}
           color={ghost ? '#ff2e93' : BLOCK_HEX[block.color]}

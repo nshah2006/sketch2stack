@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { Stroke } from '../../types'
+import type { Block, Stroke } from '../../types'
 import { SketchTo3D } from './SketchTo3D'
 
-const STEPS = ['Reading your sketch', 'Matching block shapes', 'Checking stability', 'Generating 4 interpretations']
+const STEPS = ['Reading your sketch', 'Matching block shapes', 'Checking stability and reach', 'Generating interpretations']
 
-export function GeneratingScreen({ strokes, onDone }: { strokes: Stroke[]; onDone: () => void }) {
+type Props = { strokes: Stroke[]; onDone: () => void; preview?: Block[]; ready?: boolean }
+
+export function GeneratingScreen({ strokes, onDone, preview, ready = true }: Props) {
   const [i, setI] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setI((x) => Math.min(x + 1, STEPS.length - 1)), 1300)
@@ -14,7 +16,7 @@ export function GeneratingScreen({ strokes, onDone }: { strokes: Stroke[]; onDon
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 p-4">
-      <SketchTo3D strokes={strokes} onDone={onDone} className="panel aspect-[4/3] w-full max-w-2xl dot-grid" />
+      <SketchTo3D strokes={strokes} blocks={preview} onDone={onDone} className="panel aspect-[4/3] w-full max-w-2xl dot-grid" />
       <div className="flex h-7 items-center gap-3">
         <span className="relative flex h-2.5 w-2.5">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-pink opacity-60" />
@@ -29,7 +31,7 @@ export function GeneratingScreen({ strokes, onDone }: { strokes: Stroke[]; onDon
             transition={{ duration: 0.2 }}
             className="text-sm text-muted"
           >
-            {STEPS[i]}…
+            {i === STEPS.length - 1 && !ready ? 'Asking the planner what the arm can reach' : STEPS[i]}…
           </motion.span>
         </AnimatePresence>
       </div>

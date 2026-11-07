@@ -5,6 +5,7 @@ Sidekick Builder (HackUTD). The user picks a preset or draws a build from the fr
 The first prototype (teach-by-showing: hand demo -> replay) lives in `legacy/` and is no longer the plan.
 
 ## Pipeline
+0. Main UI: `frontend/` (React + three.js): sketch -> `POST /api/generate` (`sidekick/webapi.py`) -> choose -> `POST /api/build` -> live status by `run_id`. Classic UI stays at `/classic`.
 1. Design: `sidekick/ui/index.html` front-view editor. Blocks drop by gravity; "push back" sets the depth slot. Or one of the presets in `sidekick/presets.py`.
 2. Plan: `planner.py` settles heights, checks support/roof/bounds/inventory/reach, orders bottom-up, back first, left to right, and picks the finger direction.
 3. Build: `builder.py` finds a matching loose block in a supply zone (or asks the user for one), `motion.py` picks it, turns the wrist, places it; the camera checks it.

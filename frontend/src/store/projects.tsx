@@ -1,10 +1,16 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { Project } from '../types'
 import { TEMPLATES } from '../mocks/templates'
-import { BUILDS } from '../mocks/builds'
 import { load, save, uid } from './storage'
 
-const KEY = 's2s.projects'
+// v2: builds are stored whole (from the robot server). v1 held ids of mock builds
+// that no longer exist, so it's dropped rather than migrated.
+const KEY = 's2s.projects.v2'
+try {
+  localStorage.removeItem('s2s.projects')
+} catch {
+  /* ignore */
+}
 const DAY = 86_400_000
 const now = Date.now()
 
@@ -14,10 +20,10 @@ const SEED: Project[] = [
     name: 'Backyard house',
     createdAt: now - 2 * DAY,
     updatedAt: now - 2 * DAY,
-    status: 'built',
+    status: 'draft',
     strokes: TEMPLATES.house.strokes,
     prompt: '',
-    buildIds: BUILDS.map((b) => b.id),
+    buildIds: [],
     selectedBuild: 0,
   },
   {
@@ -25,10 +31,10 @@ const SEED: Project[] = [
     name: 'Castle gate',
     createdAt: now - 5 * DAY,
     updatedAt: now - 4 * DAY,
-    status: 'generated',
+    status: 'draft',
     strokes: TEMPLATES.arch.strokes,
     prompt: 'gate with an arch',
-    buildIds: ['gate', 'porch', 'cottage'],
+    buildIds: [],
     selectedBuild: 0,
   },
   {
@@ -67,6 +73,7 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
       strokes: [],
       prompt: '',
       buildIds: [],
+      builds: [],
       selectedBuild: 0,
       ...patch,
       id,

@@ -512,7 +512,7 @@ def cmd_pick_test(cfg, a):
             design = {"blocks": [{"type": "cube", "color": "red", "x": 8.5, "depth": 0, "rot": 0, "z_hint": 0}]}
             if st.world:
                 st.world.clear_blocks()
-            started, probs = b.start_build(design)
+            started, probs, _ = b.start_build(design)
             if not started:
                 print(probs)
                 break
@@ -554,7 +554,7 @@ def cmd_build(cfg, a):
         st.world.fill_supply(presets.needed(design))
     b = Builder(cfg, st.catalog, st.source, st.arm, st.body, feeder=st.world.person if st.world else None)
     try:
-        ok, probs = b.start_build(design)
+        ok, probs, _ = b.start_build(design)
         for p in probs:
             print(f"  {p['level']}: {p['msg']}")
         if not ok:

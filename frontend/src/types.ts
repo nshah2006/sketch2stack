@@ -1,5 +1,5 @@
 export type BlockShape = 'cube' | 'brick' | 'plank' | 'arch' | 'cylinder' | 'triangle'
-export type BlockColor = 'pink' | 'red' | 'blue' | 'yellow' | 'green' | 'white'
+export type BlockColor = 'pink' | 'red' | 'blue' | 'yellow' | 'green' | 'white' | 'orange'
 
 /** One toy block. x,y,z = min corner in block units, y is up. */
 export type Block = {
@@ -10,6 +10,10 @@ export type Block = {
   size: [number, number, number]
   color: BlockColor
   shape: BlockShape
+  /** Robot block type (catalog id), pose (0 as shown, 1 on its side, 2 on its end), quarter turn (0|90). */
+  type?: string
+  pose?: number
+  rot?: number
 }
 
 export type Build = {
@@ -18,6 +22,8 @@ export type Build = {
   blurb: string
   stability: number
   blocks: Block[]
+  source?: 'sketch' | 'preset'
+  problems?: { index: number | null; level: 'error' | 'warn'; msg: string }[]
 }
 
 /** Normalized 0..1 coordinates so strokes scale with any canvas size. */
@@ -38,8 +44,13 @@ export type Project = {
   strokes: Stroke[]
   prompt: string
   buildIds: string[]
+  /** The generated builds themselves (ids alone can't be resolved once the server restarts). */
+  builds?: Build[]
   selectedBuild: number
 }
+
+/** A build the robot was asked to run. Valid only for the server that issued it. */
+export type Run = { runId: number; serverId: string; build: Build; startedAt: number; projectId: string | null }
 
 export type User = {
   name: string

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { Stroke } from '../../types'
+import type { Block, Stroke } from '../../types'
 import { BUILDS, BLOCK_HEX } from '../../mocks/builds'
 import { BlockScene } from '../build/BlockScene'
 
@@ -30,12 +30,14 @@ const LABELS: Record<Phase, string> = {
 
 type Props = {
   strokes?: Stroke[]
+  /** Blocks to reveal in the 3D phase (the first generated build); a sample house until they arrive. */
+  blocks?: Block[]
   loop?: boolean
   onDone?: () => void
   className?: string
 }
 
-export function SketchTo3D({ strokes, loop = false, onDone, className }: Props) {
+export function SketchTo3D({ strokes, blocks, loop = false, onDone, className }: Props) {
   const [phase, setPhase] = useState<Phase>('draw')
   const [cycle, setCycle] = useState(0)
 
@@ -133,7 +135,7 @@ export function SketchTo3D({ strokes, loop = false, onDone, className }: Props) 
           animate={{ opacity: 1 }}
           transition={{ duration: 0.5 }}
         >
-          <BlockScene blocks={BUILDS[0].blocks} intro introDelay={0.1} stagger={0.07} className="h-full w-full" />
+          <BlockScene blocks={blocks?.length ? blocks : BUILDS[0].blocks} intro introDelay={0.1} stagger={0.07} className="h-full w-full" />
         </motion.div>
       )}
 

@@ -7,6 +7,7 @@ export const BLOCK_HEX: Record<BlockColor, string> = {
   yellow: '#facc15',
   green: '#22c55e',
   white: '#e7e5e4',
+  orange: '#f28c1e',
 }
 
 let n = 0

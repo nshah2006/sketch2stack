@@ -199,6 +199,10 @@ class BodyModel:
         """Pulses for J0-J3 that put the marker at target (x, y, z) pointing down.
         -> {"pulses", "pred", "error", "down", "reachable"}"""
         target = np.asarray(target, np.float32)
+        key = (tuple(np.round(target, 1).tolist()), steps, starts)
+        cache = self.__dict__.setdefault("_cache", {})
+        if key in cache:                        # planning asks about the same points a lot
+            return dict(cache[key])
         d = np.linalg.norm(self.Y[:, :3] - target, axis=1)
         near = np.argsort(d)[:starts]
         lo = torch.tensor((self.jmin - 1500) / 1000)
@@ -228,8 +232,12 @@ class BodyModel:
         pulses = (best_q[i].numpy() * 1000 + 1500).round().astype(int)
         pred = self.forward(pulses)[0]
         err = float(np.linalg.norm(pred[:3] - target))
-        return {"pulses": pulses.tolist(), "pred": pred.tolist(), "error": err,
-                "down": float(pred[3]), "reachable": bool(err <= 1.5 and pred[3] >= 0.85)}
+        out = {"pulses": pulses.tolist(), "pred": pred.tolist(), "error": err,
+               "down": float(pred[3]), "reachable": bool(err <= 1.5 and pred[3] >= 0.85)}
+        if len(cache) > 20000:
+            cache.clear()
+        cache[key] = out
+        return dict(out)
 
     def reachable(self, x, y):
         """Yes only if a babbled sample pointing down lies within 4 cm horizontally."""

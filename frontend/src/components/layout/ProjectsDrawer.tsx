@@ -3,7 +3,6 @@ import { AnimatePresence, motion } from 'motion/react'
 import { Copy, FolderOpen, MoreHorizontal, PenLine, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import type { Project } from '../../types'
 import { useProjects } from '../../store/projects'
-import { buildById } from '../../mocks/builds'
 import { IsoThumb, SketchThumb } from '../build/Thumbs'
 
 export type ProjectAction = 'open' | 'edit' | 'regenerate'
@@ -100,7 +99,7 @@ export function ProjectsDrawer({ open, onClose, activeId, onAction, onNew }: Pro
 function ProjectCard({ p, active, onAction }: { p: Project; active: boolean; onAction: Props['onAction'] }) {
   const { remove, duplicate } = useProjects()
   const [menu, setMenu] = useState(false)
-  const build = p.buildIds.length ? buildById(p.buildIds[p.selectedBuild] ?? p.buildIds[0]) : null
+  const build = p.builds?.length ? p.builds[p.selectedBuild] ?? p.builds[0] : null
 
   return (
     <motion.li

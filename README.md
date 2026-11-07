@@ -4,6 +4,16 @@ Pick a preset (or draw a build from the front in the browser) and a 6-joint arm 
 
 Everything runs in a **simulator first**. At the hackathon the same code switches to the real arm by setting `use_sim` to `false`.
 
+## The 3D app
+
+`frontend/` is the main UI (sketch → choose a 3D interpretation → watch it build). Build it once and the robot server serves it:
+
+```bash
+cd frontend && npm install && npm run build && cd ..
+python -m sidekick ui --sim --speed 3      # http://localhost:8000 (classic UI at /classic)
+```
+See `frontend/README.md` for the API it uses and how stale state is prevented.
+
 ## Quick start (simulator, no hardware)
 
 ```bash
