@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-rgb: 10 10 11;
+  --surface-rgb: 20 20 22;
+  --raised-rgb: 27 27 31;
+  --line-rgb: 38 38 43;
+  --fg-rgb: 244 241 243;
+  --muted-rgb: 138 133 144;
+  --pink-rgb: 255 46 147;
+  --pink-soft-rgb: 255 111 181;
+  --bg: rgb(var(--bg-rgb));
+  --surface: rgb(var(--surface-rgb));
+  --raised: rgb(var(--raised-rgb));
+  --line: rgb(var(--line-rgb));
+  --fg: rgb(var(--fg-rgb));
+  --muted: rgb(var(--muted-rgb));
+  --pink: rgb(var(--pink-rgb));
+  --pink-soft: rgb(var(--pink-soft-rgb));
+  --pink-dim: rgba(255, 46, 147, 0.12);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Bricolage Grotesque', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--pink);
+  color: #000;
+}
+
+@layer components {
+  .dot-grid {
+    background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  .pink-grid {
+    background-image: linear-gradient(rgba(255, 46, 147, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 46, 147, 0.08) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+  .panel {
+    @apply rounded-2xl border border-line bg-surface;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition-[background-color,border-color,color,box-shadow,transform] duration-150 active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none;
+  }
+  .btn-pink {
+    @apply btn bg-pink text-black hover:shadow-glow;
+  }
+  .btn-ghost {
+    @apply btn border border-line bg-raised text-fg hover:border-pink/60 hover:text-pink-soft;
+  }
+  .icon-btn {
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-lg border border-transparent text-muted transition-colors hover:border-line hover:bg-raised hover:text-fg active:scale-95;
+  }
+  .label {
+    @apply font-mono text-[11px] uppercase tracking-[0.14em] text-muted;
+  }
+  .input {
+    @apply w-full rounded-xl border border-line bg-raised px-3.5 py-2.5 text-sm text-fg outline-none transition-colors placeholder:text-muted/70 focus:border-pink focus:shadow-[0_0_0_3px_rgba(255,46,147,0.18)];
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--pink);
+  outline-offset: 2px;
+}
+
+@keyframes scan {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(100%); }
+}
+@keyframes noise {
+  0%, 100% { transform: translate(0, 0); }
+  25% { transform: translate(-2%, 1%); }
+  50% { transform: translate(1%, -2%); }
+  75% { transform: translate(2%, 2%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
