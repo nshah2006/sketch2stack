@@ -74,7 +74,8 @@ class App:
             p.home = np.array([25.0, -5.0])
             p.hand = p.home.copy()
             claw = w.truth()["finger"]
-            target = (claw[0], claw[1] - 4) if claw[2] < 25 else ((b[0] + b[1]) / 2, b[2])
+            # stop inside the 10 cm safety radius but well clear of touching the claw
+            target = (claw[0], claw[1] - 7) if claw[2] < 25 else ((b[0] + b[1]) / 2, b[2])
             p._start(target, "poke")
         return {"ok": True}
 
@@ -138,6 +139,9 @@ def make_handler(app):
             if path == "/api/build":
                 ok, probs = app.builder.start_build(data.get("design", {}))
                 return self._send(200 if ok else 409, {"ok": ok, "problems": probs})
+            if path == "/api/log/clear":
+                app.builder.clear_log()
+                return self._send(200, {"ok": True})
             if path == "/api/stop":
                 app.builder.stop_build()
                 return self._send(200, {"ok": True})

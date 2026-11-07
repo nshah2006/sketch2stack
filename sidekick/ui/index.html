@@ -102,9 +102,10 @@
     <h2>Front view <span class="hint" id="dims"></span></h2>
     <div id="editorWrap"><svg id="editor"></svg></div>
     <div class="toolbar">
-      <button id="btnRot" disabled>Rotate (R)</button>
-      <button id="btnBack" disabled>Push back</button>
-      <button id="btnFront" disabled>Bring forward</button>
+      <button id="btnRot" disabled title="Turn it a quarter turn on the table (long side left-right vs front-back)">Rotate (R)</button>
+      <button id="btnPose" disabled title="Lay it on its side or stand it on its end">Tip over (T)</button>
+      <button id="btnBack" disabled title="Move it one row away from you (behind the front row)">Push back</button>
+      <button id="btnFront" disabled title="Move it one row toward you">Bring forward</button>
       <button id="btnDel" disabled>Delete (Del)</button>
       <span class="sp"></span>
       <button id="btnClear">Clear</button>
@@ -133,7 +134,8 @@
     </div>
     <h2 style="margin-top:14px">Build steps</h2>
     <ol class="steps" id="steps"></ol>
-    <h2>Log</h2>
+    <h2 style="display:flex;align-items:center">Log <span style="flex:1"></span>
+      <button id="btnClearLog" style="padding:3px 10px;font-size:12px;text-transform:none;letter-spacing:0">Clear</button></h2>
     <pre class="log" id="log"></pre>
   </section>
 </main>
@@ -161,8 +163,12 @@ function api(path, body) {
 const svgEl = (tag, attrs) => { const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
 
+function posed(b) {          // [w, d, h] for the block's pose (flat / on its side / on its end)
+  const ps = TYPES[b.type].poses || [{ size: TYPES[b.type].size }];
+  return ps[Math.min(b.pose || 0, ps.length - 1)].size;
+}
 function footprint(b) {
-  const [w, d] = TYPES[b.type].size;
+  const [w, d] = posed(b);
   return (b.rot % 180 === 90) ? [d, w] : [w, d];
 }
 
@@ -183,7 +189,7 @@ function shapePath(type, rot, w, h, s) {
 
 function drawBlock(g, b, x, z, s, opts = {}) {
   const [fx] = footprint(b);
-  const h = TYPES[b.type].size[2];
+  const h = posed(b)[2];
   const grp = svgEl("g", { transform: `translate(${x * s},${opts.base - z * s})` });
   const p = svgEl("path", { d: shapePath(b.type, b.rot || 0, fx, h, s), fill: fillFor(b),
     stroke: opts.stroke || "rgba(0,0,0,.35)", "stroke-width": opts.sw || 1, opacity: opts.opacity ?? 1 });
@@ -315,7 +321,7 @@ function svgPoint(e) {
 
 function startDrag(e, block, index) {
   e.preventDefault();
-  const [fx] = footprint(block); const h = TYPES[block.type].size[2];
+  const [fx] = footprint(block); const h = posed(block)[2];
   drag = { block, index, pos: null, fx, h };
   window.addEventListener("pointermove", onMove); window.addEventListener("pointerup", onUp, { once: true });
   onMove(e);
@@ -344,6 +350,11 @@ function onUp() {
 function updateToolbar() {
   const has = selected !== null && design.blocks[selected];
   ["btnRot", "btnDel"].forEach(id => $(id).disabled = !has);
+  const nPoses = has ? (TYPES[design.blocks[selected].type].poses || [1]).length : 0;
+  $("btnPose").disabled = !has || nPoses < 2;
+  $("btnPose").textContent = has && nPoses > 1
+    ? `Tip over (T): ${TYPES[design.blocks[selected].type].poses[(design.blocks[selected].pose || 0)].name}`
+    : "Tip over (T)";
   $("btnBack").disabled = !has || (design.blocks[selected].depth || 0) + 1 >= INFO.grid.slots;
   $("btnFront").disabled = !has || !(design.blocks[selected].depth > 0);
   $("countHint").textContent = `${design.blocks.length} block${design.blocks.length === 1 ? "" : "s"}`;
@@ -377,6 +388,8 @@ function renderProblems() {
 
 // ------------------------------------------------------------ actions
 $("btnRot").onclick = () => { const b = design.blocks[selected]; b.rot = ((b.rot || 0) + 90) % 180; check(); };
+$("btnPose").onclick = () => { const b = design.blocks[selected];
+  b.pose = ((b.pose || 0) + 1) % TYPES[b.type].poses.length; check(); };
 $("btnBack").onclick = () => { design.blocks[selected].depth = (design.blocks[selected].depth || 0) + 1; check(); };
 $("btnFront").onclick = () => { design.blocks[selected].depth = Math.max(0, (design.blocks[selected].depth || 0) - 1); check(); };
 $("btnDel").onclick = () => { design.blocks.splice(selected, 1); selected = null; check(); };
@@ -384,6 +397,7 @@ $("btnClear").onclick = () => { design = { blocks: [] }; selected = null; proble
 window.addEventListener("keydown", e => {
   if (selected === null || e.target.tagName === "INPUT") return;
   if (e.key === "r" || e.key === "R") $("btnRot").click();
+  if ((e.key === "t" || e.key === "T") && !$("btnPose").disabled) $("btnPose").click();
   if (e.key === "Delete" || e.key === "Backspace") $("btnDel").click();
 });
 async function build() {
@@ -392,6 +406,7 @@ async function build() {
 }
 $("btnBuild").onclick = build;
 $("btnStop").onclick = () => api("/api/stop", {});
+$("btnClearLog").onclick = () => { api("/api/log/clear", {}); $("log").textContent = ""; };
 $("btnSimReset").onclick = () => api("/api/sim/reset", { design });
 $("btnPoke").onclick = () => api("/api/sim/poke", {});
 

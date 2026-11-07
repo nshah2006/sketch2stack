@@ -244,6 +244,7 @@ class Block:
     d: float = 3.0
     h: float = 3.0
     round_: bool = False
+    pose: int = 0
     held: bool = False
     rel: float = 0.0        # yaw relative to the claw's grip axis while held
 
@@ -278,9 +279,10 @@ class SimPerson:
         self.reaches = 0
         self.blocked_for = 0.0
         self.blocked_total = 0.0
+        self.waiting_for_spot = 0.0
 
-    def request(self, tid, color):
-        self.requests.append((tid, color))
+    def request(self, tid, color, pose=0):
+        self.requests.append((tid, color, pose))
 
     def _start(self, end, state):
         start = np.asarray(self.hand, float)
@@ -301,12 +303,17 @@ class SimPerson:
     def step(self, dt, now):
         if self.state == "away":
             if self.requests:
-                tid, color = self.requests.pop(0)
+                tid, color, pose = self.requests.pop(0)
                 spot = self.w.free_supply_spot() if self.w.cfg["use_color"] else self.w.pickup_spot()
                 if spot is None:
-                    self.requests.insert(0, (tid, color))
+                    self.requests.insert(0, (tid, color, pose))
+                    self.waiting_for_spot += dt
+                    if self.waiting_for_spot > 3.0 and not self.w.cfg["use_color"]:
+                        self.w.clear_pickup()          # a person would just take the old block off
+                        self.waiting_for_spot = 0.0
                     return
-                self.carry, self.drop_at, self.blocked_total = (tid, color), spot, 0.0
+                self.waiting_for_spot = 0.0
+                self.carry, self.drop_at, self.blocked_total = (tid, color, pose), spot, 0.0
                 self.home = np.array([self.rng.uniform(10, 40), self.rng.uniform(-10, 0)])
                 self.hand = self.home.copy()
                 self.reaches += 1
@@ -319,14 +326,16 @@ class SimPerson:
                 self._start((self.rng.uniform(b[0], b[1]), self.rng.uniform(b[2] - 3, b[3])), "poke")
             return
         claw = self.w.truth()
-        if claw["finger"][2] < 20:
+        if claw["finger"][2] < 20 and self.state != "poke":
             nxt = self._pos_at(min(1.0, (self.t_path + dt) / self.dur))
             if np.hypot(*(nxt - claw["finger"][:2])) < self.pause_cm:
                 self.blocked_for += dt                 # wait for the arm...
                 self.blocked_total += dt
-                if self.blocked_total > 6.0 and self.state == "feed":
-                    self.requests.insert(0, self.carry)  # give up for now; try again later
-                    self.carry, self.blocked_total = None, 0.0
+                if self.blocked_total > 6.0:
+                    if self.state == "feed":
+                        self.requests.insert(0, self.carry)  # give up for now; try again later
+                        self.carry = None
+                    self.blocked_total = 0.0
                     self._start(self.home, "back")
                     return
                 if self.blocked_for > 1.5:             # ...then walk around it
@@ -347,12 +356,15 @@ class SimPerson:
         if f < 1.0:
             return
         if self.state == "feed":
-            tid, color = self.carry
-            self.w.add_block(tid, color, *self.drop_at, yaw=float(self.rng.uniform(-30, 30)))
+            tid, color, pose = self.carry
+            self.w.add_block(tid, color, *self.drop_at, yaw=float(self.rng.uniform(-30, 30)), pose=pose)
             self.carry = None
             self._start(self.home, "back")
         elif self.state == "poke":
-            self._start(self.home, "back")
+            self.state, self.palm_until = "linger", now + 1.5     # hold still a moment, then leave
+        elif self.state == "linger":
+            if now >= self.palm_until:
+                self._start(self.home, "back")
         elif self.state == "back":
             self.state, self.hand = "away", None
 
@@ -462,7 +474,7 @@ class World:
                         ok = b.d <= self.catalog.max_grip + 0.2
                     for side_angle, axis in ((b.yaw + 90, "y"), (b.yaw, "x")):
                         diff = abs(((g - side_angle) + 90) % 180 - 90)
-                        if diff <= 20 and axis in self.catalog.grippable_axes(b.type):
+                        if diff <= 20 and axis in self.catalog.grippable_axes(b.type, b.pose):
                             ok = True
                     if ok:
                         b.held, b.rel = True, b.yaw - g
@@ -537,11 +549,11 @@ class World:
         except queue.Empty:
             return None
 
-    def add_block(self, tid, color, x, y, yaw=0.0, z=0.0):
-        w, d, h = self.catalog.size(tid)
+    def add_block(self, tid, color, x, y, yaw=0.0, z=0.0, pose=0):
+        w, d, h = self.catalog.size(tid, pose)
         with self.lock:
             b = Block(self._next_id, tid, color, float(x), float(y), float(yaw), float(z), w, d, h,
-                      self.catalog.round_(tid))
+                      self.catalog.round_(tid), int(pose))
             self._next_id += 1
             self.blocks.append(b)
         return b
@@ -552,6 +564,11 @@ class World:
         if any(math.hypot(b.x - px, b.y - py) < 3.0 and not b.held for b in self.blocks):
             return None
         return (px + float(self.rng.normal(0, 0.4)), py + float(self.rng.normal(0, 0.4)))
+
+    def clear_pickup(self):
+        px, py = self.cfg["layout"]["pickup"]
+        with self.lock:
+            self.blocks = [b for b in self.blocks if b.held or math.hypot(b.x - px, b.y - py) >= 3.0]
 
     def clear_blocks(self):
         with self.lock:

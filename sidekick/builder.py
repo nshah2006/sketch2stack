@@ -199,20 +199,38 @@ class Builder:
         if errors:
             return False, probs
         self.cancel.clear()
+        if not self.safety_stopped:
+            self.abort.clear()               # a leftover Stop must not block the next build
         self.plan_steps = steps
         with self.lock:
             self.status.update({"step": 0, "total": len(steps), "result": None, "prompt": None,
-                                "steps": [{"label": f"{s['color']} {self.catalog.types[s['type']]['name']}"
-                                                    + (f" on top ({s['z']:.1f} cm up)" if s['z'] > 0 else ""),
-                                           "state": "todo"} for s in steps]})
+                                "log": [],     # each build starts with a fresh log
+                                "steps": [{"label": self._step_label(s), "state": "todo"} for s in steps]})
         self._worker = threading.Thread(target=self._run, args=(steps,), daemon=True)
         self._worker.start()
         return True, probs
 
+    def _step_label(self, s):
+        name = self.catalog.types[s["type"]]["name"]
+        pose = self.catalog.pose_name(s["type"], s.get("pose", 0))
+        label = (f"{s['color']} {name}" if self.cfg["use_color"] else name)
+        if pose != self.catalog.POSE_NAMES[0]:
+            label += f", {pose}"
+        if s["z"] > 0:
+            label += f", on top ({s['z']:.1f} cm up)"
+        return label
+
+    def clear_log(self):
+        with self.lock:
+            self.status["log"] = []
+
     def stop_build(self):
+        self.arm.stop()
+        if not self.busy():
+            self.log("stopped")
+            return
         self.cancel.set()
         self.abort.set()
-        self.arm.stop()
         self.log("stop requested")
 
     def _step_state(self, i, state):
@@ -263,12 +281,19 @@ class Builder:
             b = dict(b)
             b["type"], b["color"] = st["type"], st["color"]
             b["z"] = 0.0
-            b["yaw"] = block_yaw_from_long_axis(b.get("angle", 0.0), st["type"], self.catalog)
+            b["pose"] = st.get("pose", 0)
+            b["yaw"] = block_yaw_from_long_axis(b.get("angle", 0.0), st["type"], self.catalog, b["pose"])
             if b.get("size"):
-                fp = sorted(self.catalog.size(st["type"])[:2], reverse=True)
+                fp = sorted(self.catalog.size(st["type"], b["pose"])[:2], reverse=True)
                 if abs(b["size"][0] - fp[0]) > 1.5 or abs(b["size"][1] - fp[1]) > 1.5:
-                    self.log(f"block on the pickup spot measures {b['size'][0]:.1f} x {b['size'][1]:.1f} cm; "
-                             f"expected about {fp[0]:.0f} x {fp[1]:.0f}")
+                    # clearly the wrong block (e.g. left over from a stopped build): don't build with it
+                    msg = (f"Wrong block on the pickup spot. Swap it for a "
+                           f"{self.catalog.types[st['type']]['name'].lower()}.")
+                    with self.lock:
+                        if self.status.get("prompt") != msg:
+                            self.status["prompt"] = msg
+                            self.status["log"] = (self.status["log"] + [msg])[-40:]
+                    return None
             return b
         return None
 
@@ -292,7 +317,7 @@ class Builder:
         key = (b["id"], round(b["x"]), round(b["y"]))
         cache = self.__dict__.setdefault("_reach_cache", {})
         if key not in cache:
-            h = self.catalog.height(b["type"])
+            h = self.catalog.height(b["type"], b.get("pose", 0))
             z0 = float(b.get("z") or 0.0)
             cache[key] = all(self.body.solve([b["x"], b["y"], z])["reachable"]
                              for z in (self.cfg.grasp_z(z0, h), self.cfg.hover_z(z0, h)))
@@ -311,6 +336,9 @@ class Builder:
     def _wait_for_block(self, st):
         """Ask for a block (sim person, or a prompt in the UI) and wait for it."""
         name = self.catalog.types[st['type']]['name'].lower()
+        pose = self.catalog.pose_name(st["type"], st.get("pose", 0))
+        if pose != self.catalog.POSE_NAMES[0]:
+            name += f" ({pose})"
         msg = (f"Place a {st['color']} {name} in a supply zone" if self.cfg["use_color"]
                else f"Place a {name} on the pickup spot")
         with self.lock:
@@ -321,7 +349,7 @@ class Builder:
         self.motion._move(list(self.cfg["park"]))       # stay clear of the person's hand
         self.action(msg)
         if self.feeder is not None:
-            self.feeder.request(st["type"], st["color"])
+            self.feeder.request(st["type"], st["color"], st.get("pose", 0))
         t0 = self.clock.time()
         while not self.cancel.is_set():
             b = self._find_supply(st)
@@ -350,7 +378,7 @@ class Builder:
             if blk is None:
                 return "cancel" if self.cancel.is_set() else "fail"
             yaw = blk.get("yaw", 0.0)
-            g_pick = self.motion.grip_for(yaw, st["grip"], st["yaw"], st["type"])
+            g_pick = self.motion.grip_for(yaw, st["grip"], st["yaw"], st["type"], st.get("pose", 0))
             # the same block axis at the place: fingers along target yaw (+90 if gripping across d)
             across_d = abs(fold180(g_pick - yaw - 90)) < 45
             g_place = fold180(st["yaw"] + (90.0 if across_d else 0.0))

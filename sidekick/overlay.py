@@ -91,7 +91,7 @@ def draw(img, proj, cfg, catalog, state):
     for i, st in enumerate(state.get("plan", [])):
         if i in done:
             continue
-        fx, fy = catalog.footprint(st["type"], 0)
+        fx, fy = catalog.footprint(st["type"], 0, st.get("pose", 0))
         col = _col(cfg, st["color"], st["type"])
         top = st["z"] + st["h"]
         if catalog.round_(st["type"]):
@@ -107,14 +107,14 @@ def draw(img, proj, cfg, catalog, state):
     for b in state.get("blocks", []):
         tid = b.get("type")
         col = _col(cfg, b["color"], tid) if (tid or cfg["use_color"]) else (150, 150, 150)
-        top = (b.get("z") or 0) + (catalog.height(tid) if tid else 3.0)
+        top = (b.get("z") or 0) + (catalog.height(tid, b.get("pose", 0)) if tid else 3.0)
         if tid and catalog.round_(tid):
             r = catalog.size(tid)[0] / 2
             c = proj(b["x"], b["y"], top)
             e = proj(b["x"] + r, b["y"], top)
             cv2.circle(img, c, max(3, abs(e[0] - c[0])), col, -1, cv2.LINE_AA)
         else:
-            w, d = (catalog.size(tid)[:2] if tid else (3, 3))
+            w, d = (catalog.size(tid, b.get("pose", 0))[:2] if tid else (3, 3))
             pts = _rect_pts(proj, b["x"], b["y"], w, d, b.get("yaw", 0.0), top)
             cv2.fillPoly(img, [pts], col, cv2.LINE_AA)
             cv2.polylines(img, [pts], True, (40, 40, 40), 1, cv2.LINE_AA)

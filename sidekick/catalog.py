@@ -5,8 +5,10 @@ Measure the real blocks and edit sidekick_data/blocks.json (created by
 pose; the arm can turn it about the vertical axis (rot 0 or 90) but never
 tips it over.
 
-  size   [w, d, h] cm: w along x (left-right in the front view) at rot 0,
-         d front-to-back, h height
+  size   [w, d, h] cm as the block stands in the photo: w along x (left-right
+         in the front view) at rot 0, d front-to-back, h height
+  poses  boxes can also lie on their side or stand on their end (the person
+         puts the block on the pickup spot that way; the arm never tips it)
   shape  box | cylinder | arch | roof   (front-view outline; cylinders look
          round from above)
   top    true if something can sit on it (a roof can't hold anything)
@@ -69,17 +71,37 @@ class Catalog:
         return p
 
     # ---- geometry
-    def size(self, tid):
-        w, d, h = self.types[tid]["size"]
+    POSE_NAMES = ["as shown", "on its side", "on its end"]
+
+    def poses(self, tid):
+        """Ways the block can stand: [{"name", "size": [w, d, h]}]. Boxes can lie
+        on their side (h and d swap) or stand on their end (w becomes the height).
+        Cylinders, arches and roofs only stand one way."""
+        w, d, h = (float(v) for v in self.types[tid]["size"])
+        if self.types[tid]["shape"] != "box":
+            return [{"name": self.POSE_NAMES[0], "size": [w, d, h]}]
+        out = []
+        for name, s in zip(self.POSE_NAMES, ([w, d, h], [w, h, d], [d, h, w])):
+            if not any(sorted(o["size"]) == sorted(s) and o["size"][2] == s[2] for o in out):
+                out.append({"name": name, "size": s})
+        return out
+
+    def size(self, tid, pose=0):
+        ps = self.poses(tid)
+        w, d, h = ps[min(int(pose or 0), len(ps) - 1)]["size"]
         return float(w), float(d), float(h)
 
-    def footprint(self, tid, rot=0):
+    def pose_name(self, tid, pose=0):
+        ps = self.poses(tid)
+        return ps[min(int(pose or 0), len(ps) - 1)]["name"]
+
+    def footprint(self, tid, rot=0, pose=0):
         """(along x, along y) in cm after turning by rot (0 or 90)."""
-        w, d, _ = self.size(tid)
+        w, d, _ = self.size(tid, pose)
         return (d, w) if int(rot) % 180 == 90 else (w, d)
 
-    def height(self, tid):
-        return self.size(tid)[2]
+    def height(self, tid, pose=0):
+        return self.size(tid, pose)[2]
 
     def round_(self, tid):
         return self.types[tid]["shape"] == "cylinder"
@@ -121,10 +143,10 @@ class Catalog:
         return out
 
     # ---- gripping
-    def grippable_axes(self, tid):
+    def grippable_axes(self, tid, pose=0):
         """Block axes the claw can close across: 'y' (across d) and/or 'x' (across w).
         Arches and roofs only have flat vertical faces front and back."""
-        w, d, _ = self.size(tid)
+        w, d, _ = self.size(tid, pose)
         shape = self.types[tid]["shape"]
         axes = []
         if d <= self.max_grip:
@@ -142,12 +164,13 @@ class Catalog:
         return {"max_grip": self.max_grip,
                 "types": [{"id": t["id"], "name": t.get("name", t["id"]), "shape": t["shape"],
                            "size": t["size"], "top": t.get("top", True), "colors": t["colors"],
+                           "poses": self.poses(t["id"]),
                            "count": self.count(t["id"])}
                           for t in self.data["types"]]}
 
 
-def block_yaw_from_long_axis(long_axis_deg, tid, catalog):
+def block_yaw_from_long_axis(long_axis_deg, tid, catalog, pose=0):
     """A detection reports the angle of its long side; convert to the block's
     yaw (angle of its w side). Square and round blocks: same thing."""
-    w, d, _ = catalog.size(tid)
+    w, d, _ = catalog.size(tid, pose)
     return fold180(long_axis_deg if w >= d else long_axis_deg + 90.0)

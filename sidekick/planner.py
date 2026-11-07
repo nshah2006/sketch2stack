@@ -20,7 +20,7 @@ How height and depth are worked out:
 
 def _rect(b, cfg, catalog):
     """Footprint rectangle in strip coordinates: (x0, x1, y0, y1) in cm."""
-    fx, fy = catalog.footprint(b["type"], b.get("rot", 0))
+    fx, fy = catalog.footprint(b["type"], b.get("rot", 0), b.get("pose", 0))
     x0 = float(b["x"])
     y0 = int(b.get("depth", 0)) * cfg["depth_slot"]
     return (x0, x0 + fx, y0, y0 + fy)
@@ -43,7 +43,7 @@ def settle(design, cfg, catalog):
         if b.get("type") not in catalog.types:
             continue
         r = _rect(b, cfg, catalog)
-        h = catalog.height(b["type"])
+        h = catalog.height(b["type"], b.get("pose", 0))
         under = [(p, _overlap(r, p["rect"])) for p in placed]
         under = [(p, a) for p, a in under if a > 0]
         z = max((p["z"] + p["h"] for p, _ in under), default=0.0)
@@ -133,7 +133,8 @@ def plan(design, cfg, catalog, body=None):
         x, y = x0 + (rx0 + rx1) / 2, yf + (ry0 + ry1) / 2
         yaw = 90.0 if int(b.get("rot", 0)) % 180 == 90 else 0.0
         grip = choose_grip(b, s, [st[j] for j in done], catalog)
-        step = {"index": i, "type": b["type"], "color": b["color"], "x": round(x, 2), "y": round(y, 2),
+        step = {"index": i, "type": b["type"], "color": b["color"], "pose": int(b.get("pose", 0)),
+                "x": round(x, 2), "y": round(y, 2),
                 "z": round(s["z"], 2), "h": s["h"], "yaw": yaw, "grip": grip}
         if body is not None:
             for name, z in (("place", cfg.grasp_z(s["z"], s["h"])), ("hover", cfg.hover_z(s["z"], s["h"]))):
@@ -151,7 +152,7 @@ def choose_grip(block, s, placed, catalog):
     """Which table axis the fingers close along: 'y' (fingers in front and
     behind the block) or 'x' (left and right). Prefer a side with no block
     already standing next to it, so a finger doesn't hit a neighbour."""
-    axes = catalog.grippable_axes(block["type"])
+    axes = catalog.grippable_axes(block["type"], block.get("pose", 0))
     rot = int(block.get("rot", 0)) % 180 == 90
     table_axes = [("x" if a == "y" else "y") if rot else a for a in axes] or ["y"]
     r, z0, z1 = s["rect"], s["z"], s["z"] + s["h"]

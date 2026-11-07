@@ -70,6 +70,7 @@ camera -> markers -> claw pose         |            |
 
 * **Planner** (`planner.py`): settles blocks by gravity, checks support (nothing on a roof, center over its supports), strip bounds, height, inventory, and reach (through the body model). Orders placements bottom-up, back slot first, left to right, and picks which way the fingers close so they don't hit a neighbour.
 * **Depth**: a front view can't show depth, so every block defaults to the front slot (a wall). "Push back" moves a block one slot back; the top view shows it.
+* **Rotate / Tip over**: Rotate turns a block a quarter turn on the table (long side left-right vs front-back). Tip over lays a box on its side or stands it on its end; the arm never tips blocks itself, so the UI asks the person to put it on the pickup spot that way ("Place a long bar (on its side)").
 * **Body model** (`body_model.py`): babbling + a small neural net (pulses → fingertip x, y, z, down-ness) + gradient search for any target, with up to 3 camera corrections per move. The camera reads the claw marker's full pose, so the fingertip position is right even when the claw is slightly tilted (set `marker_to_fingertip` by measuring).
 * **Builder** (`builder.py`): finds a matching loose block in a supply zone (or asks the user to put one there, with the arm parked), picks it, turns the wrist, places it, checks it with the camera. Safety stop on every frame; the current move resumes 1 s after the area is clear.
 

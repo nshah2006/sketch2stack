@@ -86,19 +86,20 @@ class Motion:
         return ok
 
     # ---------------------------------------------------------------- pick
-    def grip_for(self, block_yaw, table_grip, place_yaw, tid):
+    def grip_for(self, block_yaw, table_grip, place_yaw, tid, pose=0):
         """Pick-time grip axis so the fingers end up along `table_grip` at the place.
         Fingers closing across the block's d side run along block_yaw + 90."""
         # which block axis lines up with the wanted table axis once the block sits at place_yaw
         want_block_axis = "y" if (table_grip == "y") == (int(round(place_yaw)) % 180 == 0) else "x"
-        if want_block_axis not in self.catalog.grippable_axes(tid):
-            want_block_axis = self.catalog.grippable_axes(tid)[0]
+        axes = self.catalog.grippable_axes(tid, pose) or ["y"]
+        if want_block_axis not in axes:
+            want_block_axis = axes[0]
         return fold180(block_yaw + (90.0 if want_block_axis == "y" else 0.0))
 
     def pick(self, blk, grip_axis):
         """blk: tracked block {x, y, type, color, z?}. -> "ok" | "miss" | "unreachable" | "abort" """
         z0 = float(blk.get("z") or 0.0)
-        h = self.catalog.height(blk["type"])
+        h = self.catalog.height(blk["type"], blk.get("pose", 0))
         x, y = blk["x"], blk["y"]
         roll = self.roll_for(grip_axis, x, y)
         open_, closed = self.cfg["claw_open"], self.cfg["claw_closed"]

@@ -86,7 +86,12 @@ def load_body(cfg, stack=None):
         return BodyModel.load(p)
     if cfg["use_sim"] and stack is not None and stack.arm is not None:
         print("No simulator body model yet: babbling and training one now (about a minute).")
-        return babble_and_train(cfg, stack, n=cfg["babble_samples"])
+        speed = stack.clock.speed
+        stack.clock.set_speed(40)              # babble the simulated arm fast...
+        try:
+            return babble_and_train(cfg, stack, n=cfg["babble_samples"])
+        finally:
+            stack.clock.set_speed(speed)       # ...then run the UI at the speed asked for
     sys.exit(f"No body model at {p}. Run `babble` then `train-body` first.")
 
 
