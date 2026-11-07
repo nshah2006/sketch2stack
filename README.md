@@ -25,7 +25,7 @@ Do these in order. Each one writes to `sidekick_data/`, so any step can be redon
 | # | Step | Command | Done when |
 |---|------|---------|-----------|
 | 1 | Flash `firmware/sidekick_firmware/sidekick_firmware.ino` (Arduino IDE, board Arduino Uno). Serial Monitor at 115200, send `?` | | Replies `OK sidekick 1`; close the monitor |
-| 2 | Wire: battery + to servo bus +, battery − to bus − **and Uno GND**. Signals: base 3, shoulder 5, elbow 6, wrist pitch 9, wrist roll 10, gripper 11. Never battery to Uno 5V/VIN | | Multimeter: 7.4–8.4 V on the bus |
+| 2 | Wire: battery + to servo bus +, battery − to bus − **and Uno GND**. Signals: base 3, shoulder 5, elbow 6, wrist pitch 9, wrist roll 10, gripper 11. E-stop button pin 12 to GND. Never battery to Uno 5V/VIN | | Multimeter: 7.4–8.4 V on the bus |
 | 3 | Center every servo at 1500 µs before fitting horns, build the arm, clamp the base | `python -m sidekick jog --real` | Each joint swings freely |
 | 4 | Find limits and poses with one hand on the battery switch: `min <j>` / `max <j>` at each end stop, then `save home`, `save park` (folded, low effort), `save ready` (**claw pointing straight down over the middle of the board, marker visible**), `save open`, `save closed` | `jog --real` | `config.json` has limits and poses |
 | 5 | Print markers at 100%, measure them, glue the claw marker on the gripper's back plate | `python -m sidekick markers` | Sizes in config match the ruler |

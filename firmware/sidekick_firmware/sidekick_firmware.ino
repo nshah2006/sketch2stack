@@ -20,6 +20,8 @@
 //
 // Uno -> laptop every 40 ms:  F a0 a1 a2 moving attached
 // Watchdog: no line for 1 s -> every target = current, LED red, frozen.
+// E-stop button (pin 12 to GND): while pressed, the arm freezes and every
+// J is ignored; the "moving" report stays 0. Release it to continue.
 
 #include <Servo.h>
 
@@ -29,6 +31,7 @@ const int PINS[NUM] = {3, 5, 6, 9, 10, 11};
 const int HARD_MIN = 600;
 const int HARD_MAX = 2400;
 const int LED_PINS[4] = {2, 4, 7, 8};   // green, yellow, blue, red
+const int ESTOP_PIN = 12;               // button to GND
 
 const unsigned long TICK_MS = 20;
 const unsigned long REPORT_MS = 40;
@@ -123,6 +126,7 @@ void handleLine(char *line) {
     }
   } else if (cmd == 'J') {
     if (!parseInts(rest, v, 6)) return;
+    if (digitalRead(ESTOP_PIN) == LOW) return;   // E-stop held: ignore moves
     for (int i = 0; i < NUM; i++) target[i] = clampJ(i, v[i]);
   } else if (cmd == 'S' && line[1] == '\0') {
     for (int i = 0; i < NUM; i++) target[i] = cur[i];
@@ -151,6 +155,7 @@ void handleLine(char *line) {
 void setup() {
   Serial.begin(115200);
   for (int k = 0; k < 4; k++) pinMode(LED_PINS[k], OUTPUT);
+  pinMode(ESTOP_PIN, INPUT_PULLUP);
   setLed(0);
   for (int i = 0; i < NUM; i++) {
     cur[i] = 1500;
@@ -184,14 +189,20 @@ void loop() {
   }
   now = millis();
 
-  // 2. Watchdog: silence for 1 s freezes the arm.
+  // 2. E-stop button: freeze at once while it is held.
+  if (digitalRead(ESTOP_PIN) == LOW) {
+    for (int i = 0; i < NUM; i++) target[i] = cur[i];
+    setLed(4);
+  }
+
+  // 3. Watchdog: silence for 1 s freezes the arm.
   if (!frozen && now - lastMsg > WATCHDOG_MS) {
     for (int i = 0; i < NUM; i++) target[i] = cur[i];
     setLed(4);
     frozen = true;
   }
 
-  // 3. Every 20 ms, step each joint toward its target.
+  // 4. Every 20 ms, step each joint toward its target.
   if (now - lastTick >= TICK_MS) {
     lastTick = now;
     for (int i = 0; i < NUM; i++) {
@@ -203,7 +214,7 @@ void loop() {
     }
   }
 
-  // 4. Every 40 ms, report sensors and state.
+  // 5. Every 40 ms, report sensors and state.
   if (now - lastReport >= REPORT_MS) {
     lastReport = now;
     Serial.print("F ");
