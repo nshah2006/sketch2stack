@@ -177,7 +177,7 @@ export function BlockScene({
         shadows
         dpr={[1, 2]}
         camera={{ fov: 35, position: [center.x + radius * 2, center.y + radius * 1.6, center.z + radius * 2.6] }}
-        gl={{ alpha: true, antialias: true }}
+        gl={{ alpha: true, antialias: true, preserveDrawingBuffer: true /* lets Export grab a PNG */ }}
       >
         <hemisphereLight args={['#ffffff', '#2a0a1a', 0.9]} />
         <directionalLight position={[5, 10, 7]} intensity={1.6} castShadow shadow-mapSize={[1024, 1024]} />

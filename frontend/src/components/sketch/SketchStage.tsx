@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Eraser, PenLine, Redo2, Sparkles, Trash2, Undo2, Wand2 } from 'lucide-react'
+import { Eraser, PenLine, Redo2, Sparkles, Trash2, Undo2 } from 'lucide-react'
+import { PromptInput } from '@/components/ui/ai-chat-input'
+import { AgentOrb, VoiceBars, useVoiceLevels } from '@/components/voice/VoiceKit'
 import type { Stroke } from '../../types'
 import { TEMPLATES } from '../../mocks/templates'
 import { SketchCanvas } from './SketchCanvas'
@@ -17,10 +19,15 @@ type Props = {
 
 const WIDTHS = [3, 6, 11]
 
+
 export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, projectName, onRename }: Props) {
   const [tool, setTool] = useState<'pen' | 'eraser'>('pen')
   const [width, setWidth] = useState(6)
   const [redo, setRedo] = useState<Stroke[]>([])
+  const [promptOpen, setPromptOpen] = useState(false)
+  const [listening, setListening] = useState(false)
+  const voice = useVoiceLevels()
+  const sideW = typeof window !== 'undefined' && window.innerWidth < 640 ? 132 : 220
 
   const commit = (s: Stroke) => {
     onStrokes([...strokes, s])
@@ -39,7 +46,8 @@ export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, 
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || (e.target as HTMLElement).tagName === 'INPUT') return
+      const tag = (e.target as HTMLElement).tagName
+      if (!(e.metaKey || e.ctrlKey) || tag === 'INPUT' || tag === 'TEXTAREA') return
       if (e.key.toLowerCase() === 'z') {
         e.preventDefault()
         e.shiftKey ? redoFn() : undo()
@@ -81,7 +89,8 @@ export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, 
       </header>
 
       {/* Board */}
-      <div className="relative grid min-h-[260px] flex-1 place-items-center" style={{ containerType: 'size' }}>
+      <div className="flex min-h-[260px] flex-1">
+      <div className="relative grid min-w-0 flex-1 place-items-center" style={{ containerType: 'size' }}>
         <div className="panel dot-grid relative aspect-[4/3] overflow-hidden" style={{ width: 'min(100cqw, 100cqh * 4 / 3)' }}>
           <SketchCanvas strokes={strokes} onCommit={commit} tool={tool} width={width} />
 
@@ -135,21 +144,62 @@ export function SketchStage({ strokes, prompt, onStrokes, onPrompt, onGenerate, 
         </div>
       </div>
 
-      {/* Prompt + Generate */}
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <div className="relative flex-1">
-          <Wand2 size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
-          <input
-            className="input pl-10"
-            placeholder="Optional: describe it (e.g. ‘a red house with a tall roof’)"
-            value={prompt}
-            onChange={(e) => onPrompt(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && canGenerate && onGenerate()}
-          />
+        {/* The agent appears to the RIGHT of the board while you dictate, never on top of it */}
+        <AnimatePresence initial={false}>
+          {listening && (
+            <motion.aside
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: sideW + 40, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ type: 'spring', duration: 0.5, bounce: 0.1 }}
+              className="flex shrink-0 items-center overflow-hidden"
+              aria-live="polite"
+            >
+              {/* ml = gap to the board, mr = buffer from the screen edge when Projects is closed */}
+              <div className="ml-4 mr-6 flex flex-col items-center justify-center gap-3 rounded-2xl border border-pink/30 bg-surface px-4 py-6 shadow-glow" style={{ width: sideW }}>
+                <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening className="aspect-square w-full max-w-[160px]" />
+                <span className="label text-center !text-pink-soft">Listening…</span>
+                <p className="text-center text-xs text-muted">Describe your build. Tap the orb button to stop.</p>
+                <VoiceBars bandsRef={voice.bandsRef} kickRef={voice.kickRef} active count={sideW > 160 ? 24 : 14} />
+              </div>
+            </motion.aside>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Describe (text or voice) + Generate */}
+      <div className="flex items-end justify-center gap-2">
+        {/* Slot grows with the input so input + Generate stay centered as one group */}
+        <div
+          className="relative h-12 min-w-0"
+          style={{
+            width: `min(100%, ${promptOpen ? 680 : 440}px)`,
+            flex: '0 1 auto',
+            transition: 'width 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275)',
+          }}
+        >
+          <div className="absolute inset-x-0 bottom-0 z-20 flex justify-center">
+            <PromptInput
+              onExpandedChange={setPromptOpen}
+              onRecordingChange={setListening}
+              onLevels={voice.onLevels}
+              onWord={voice.onWord}
+              showLevels={false}
+              value={prompt}
+              onChange={onPrompt}
+              onSubmit={() => canGenerate && onGenerate()}
+              clearOnSubmit={false}
+              placeholder="Describe it, or tap the mic and say it"
+              allowAttachments={false}
+              collapsedWidth={440}
+              expandedWidth={680}
+            />
+          </div>
         </div>
-        <button className="btn-pink px-6" disabled={!canGenerate} onClick={onGenerate}>
+        <button className="btn-pink h-12 shrink-0 rounded-full px-5 sm:px-6" disabled={!canGenerate} onClick={onGenerate}>
           <Sparkles size={16} />
-          Generate builds
+          <span className="hidden sm:inline">Generate builds</span>
+          <span className="sm:hidden">Generate</span>
         </button>
       </div>
     </div>

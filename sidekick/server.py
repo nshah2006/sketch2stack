@@ -96,7 +96,8 @@ class App:
         design = self._design(data)
         ok, probs, run_id = self.builder.start_build(design)
         if ok:
-            self.run_build = {"run_id": run_id, "build": data.get("build")}
+            # owner = who pressed Build (the app's signed-in user), so other people's tabs don't adopt it
+            self.run_build = {"run_id": run_id, "build": data.get("build"), "owner": data.get("owner")}
         return ok, {"ok": ok, "problems": probs, "run_id": run_id if ok else None,
                     "server_id": self.server_id}
 
@@ -108,7 +109,7 @@ class App:
         rb = self.run_build or {}
         same = rb.get("run_id") == self.builder.run_id
         return {"server_id": self.server_id, "run_id": self.builder.run_id, "busy": self.builder.busy(),
-                "build": rb.get("build") if same else None}
+                "build": rb.get("build") if same else None, "owner": rb.get("owner") if same else None}
 
     def status(self):
         s = self.builder.snapshot()

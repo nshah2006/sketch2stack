@@ -1,5 +1,6 @@
 import { motion } from 'motion/react'
-import { Blocks, FlaskConical, MessageCircle, PenLine, Video } from 'lucide-react'
+import { Blocks, FlaskConical, PenLine, Video, type LucideProps } from 'lucide-react'
+import { AgentOrb } from '@/components/voice/VoiceKit'
 import type { Stage } from '../../types'
 import { Logo } from './Logo'
 import { ProfileMenu } from './ProfileMenu'
@@ -10,28 +11,43 @@ type Props = {
   stage: Stage
   hasBuilds: boolean
   onNav: (t: NavTarget) => void
+  /** Agent dock open: the agent item lights up. */
+  talkOpen?: boolean
+  /** The agent only exists while a build is running. */
+  canTalk?: boolean
+}
+
+/** The agent's icon is the same wireframe sphere it shows in the pop-up. */
+function AgentIcon({ size = 19, className }: LucideProps) {
+  const px = Number(size) + 7 // the sphere reads small next to line icons
+  return (
+    <span className={className} style={{ width: px, height: px, margin: -3.5 }}>
+      <AgentOrb glow={false} className="h-full w-full" />
+    </span>
+  )
 }
 
 const ITEMS = [
   { id: 'sketch', label: 'Draw', icon: PenLine },
   { id: 'choose', label: 'Builds', icon: Blocks },
   { id: 'live', label: 'Build live', icon: Video },
-  { id: 'talk', label: 'Talk', icon: MessageCircle },
+  { id: 'talk', label: 'Talk', icon: AgentIcon },
   { id: 'labs', label: 'Labs', icon: FlaskConical },
 ] as const
 
-function isActive(stage: Stage, id: string) {
+function isActive(stage: Stage, id: string, talkOpen = false) {
+  if (id === 'talk') return talkOpen
   return stage === id || (stage === 'generating' && id === 'sketch')
 }
 
-export function LeftRail({ stage, hasBuilds, onNav }: Props) {
+export function LeftRail({ stage, hasBuilds, onNav, talkOpen, canTalk }: Props) {
   return (
     <nav className="hidden w-[76px] shrink-0 flex-col items-center gap-2 border-r border-line py-4 md:flex">
       <Logo compact />
       <div className="mt-6 flex flex-1 flex-col gap-1">
         {ITEMS.map((it) => {
-          const active = isActive(stage, it.id)
-          const disabled = !hasBuilds && (it.id === 'choose' || it.id === 'live')
+          const active = isActive(stage, it.id, talkOpen)
+          const disabled = (!hasBuilds && (it.id === 'choose' || it.id === 'live')) || (it.id === 'talk' && !canTalk)
           return (
             <button
               key={it.id}
@@ -51,12 +67,12 @@ export function LeftRail({ stage, hasBuilds, onNav }: Props) {
   )
 }
 
-export function BottomNav({ stage, hasBuilds, onNav }: Props) {
+export function BottomNav({ stage, hasBuilds, onNav, talkOpen, canTalk }: Props) {
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t border-line bg-ink/90 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
-      {ITEMS.filter((it) => it.id !== 'talk').map((it) => {
-        const active = isActive(stage, it.id)
-        const disabled = !hasBuilds && (it.id === 'choose' || it.id === 'live')
+      {ITEMS.map((it) => {
+        const active = isActive(stage, it.id, talkOpen)
+        const disabled = (!hasBuilds && (it.id === 'choose' || it.id === 'live')) || (it.id === 'talk' && !canTalk)
         return (
           <button
             key={it.id}

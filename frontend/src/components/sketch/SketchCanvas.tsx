@@ -13,6 +13,9 @@ type Props = {
 export function SketchCanvas({ strokes, onCommit, tool, width }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const current = useRef<Stroke | null>(null)
+  // The resize observer is set up once; it must redraw the latest strokes, not the first ones.
+  const strokesRef = useRef(strokes)
+  strokesRef.current = strokes
 
   const ctx2d = () => canvasRef.current?.getContext('2d') ?? null
 
@@ -45,7 +48,7 @@ export function SketchCanvas({ strokes, onCommit, tool, width }: Props) {
     const ctx = ctx2d()
     if (!ctx) return
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height)
-    for (const s of strokes) drawStroke(ctx, s)
+    for (const s of strokesRef.current) drawStroke(ctx, s)
   }
 
   // Keep backing store matched to display size × DPR.

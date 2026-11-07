@@ -40,8 +40,13 @@ export function BuildCarousel({ builds, index, onIndex }: Props) {
     <div className="flex h-full min-h-0 flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <span className="label">
+          <span className="label flex items-center gap-2">
             Interpretation {index + 1} of {builds.length}
+            {build.problems?.some((p) => p.level === 'error') && (
+              <span className="rounded-full border border-red-500/50 bg-red-500/10 px-2 py-0.5 font-sans text-[10px] normal-case tracking-normal text-red-300">
+                Arm can’t build this one
+              </span>
+            )}
           </span>
           <AnimatePresence mode="wait" initial={false}>
             <motion.div key={build.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.18 }}>
@@ -53,7 +58,7 @@ export function BuildCarousel({ builds, index, onIndex }: Props) {
         <Stability value={build.stability} />
       </div>
 
-      <div className="panel relative min-h-[280px] flex-1 overflow-hidden dot-grid">
+      <div data-build-view className="panel relative min-h-[280px] flex-1 overflow-hidden dot-grid">
         <AnimatePresence initial={false} custom={dir} mode="popLayout">
           <motion.div
             key={build.id}
