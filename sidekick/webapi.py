@@ -11,7 +11,7 @@ import math
 import cv2
 import numpy as np
 
-from . import planner, presets
+from . import dictation, planner, presets
 
 UNIT = 3.0   # cm per app block unit (one cube)
 
@@ -312,3 +312,35 @@ def _same(a, b):
 def preset_builds(cfg, catalog, body=None):
     return [design_to_build(p, cfg, catalog, f"preset-{p['id']}", p["name"], p["desc"], "preset", body)
             for p in presets.PRESETS]
+
+
+def dictate(text, build, cfg, catalog, body=None):
+    """Typed/spoken request -> {"reply", "builds": [app build]} (empty builds = nothing to show).
+    `build` is the app build on screen, for edits like "taller"."""
+    current = build_to_design(build) if build and build.get("blocks") else None
+
+    def simpler(cur):
+        mask = preset_mask(cur, cfg, catalog)
+        return _trim(tile(mask, cfg, catalog, "simple"), cfg, catalog, body) if mask is not None else None
+
+    res = dictation.parse(text, catalog, cfg, current, body, simpler)
+    d = res["design"]
+    if not d or not d["blocks"]:
+        return {"reply": res["reply"], "builds": []}
+    kept = _trim(d, cfg, catalog, body)
+    _, probs = planner.plan(d, cfg, catalog, body)
+    why = next((p["msg"] for p in probs if p["level"] == "error"), "it doesn't fit")
+    reply = res["reply"]
+    if not kept["blocks"]:
+        return {"reply": f"That can't be built: {why}", "builds": []}
+    if len(kept["blocks"]) < len(d["blocks"]):
+        names = {}
+        for b in kept["blocks"]:
+            nm_ = catalog.types[b["type"]].get("name", b["type"]).lower()
+            names[nm_] = names.get(nm_, 0) + 1
+        have = ", ".join(f"{n} {k}" + ("s" if n > 1 else "") for k, n in names.items())
+        reply = (f"That doesn't fully fit ({why}). I kept {have} and dropped "
+                 f"{len(d['blocks']) - len(kept['blocks'])}.")
+    bid = f"voice-{abs(hash(str(kept['blocks']))) % 10**6}"
+    return {"reply": reply, "builds": [design_to_build(kept, cfg, catalog, bid, "From your request",
+                                                       text.strip()[:80], "sketch", body)]}

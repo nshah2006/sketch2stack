@@ -5,3 +5,4 @@ __pycache__/
 demo.json
 sidekick_data/
 frontend/tsconfig.tsbuildinfo
+.env
