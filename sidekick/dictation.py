@@ -319,6 +319,12 @@ def _describe(items, sup, made, catalog, order=None, multi=None):
     return "Here's " + ", then ".join(parts) + "." if parts else ""
 
 
+def _norm_color(c):
+    """Whatever color word the model returned -> the catalog's name (wood/brown -> natural)."""
+    c = str(c or "").strip().lower()
+    return COLOR_ALIAS.get(c, c) or None
+
+
 def llm_items(text, catalog):
     """Free-form request -> (items, sup) via OpenAI, or None (no key, offline, or garbage).
     Each block group says which group it sits on (`on`), so there are no connectors to misread.
@@ -362,7 +368,7 @@ def llm_items(text, catalog):
         raw = data["items"]
         ids = {int(i["id"]): k for k, i in enumerate(raw)}
         items = [{"tid": i["type"], "n": max(1, min(int(i.get("count") or 1), 20)),
-                  "color": i.get("color") or None, "ref": False} for i in raw]
+                  "color": _norm_color(i.get("color")), "ref": False} for i in raw]
         def ons(i):
             v = i.get("on")
             vs = v if isinstance(v, list) else [v]
