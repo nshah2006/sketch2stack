@@ -50,6 +50,7 @@ class Motion:
     def go_to(self, x, y, z, claw=None, roll=None, correct=True):
         """-> "ok" | "unreachable" | "abort" """
         claw = self.claw if claw is None else claw
+        correct = correct and self.cfg.get("camera_correct", True)
         roll = self.roll if roll is None else roll
         target = (x, y, z)
         aim = list(target)

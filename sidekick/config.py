@@ -58,7 +58,9 @@ DEFAULTS = {
     "table_marker_size": 5.0,
     "claw_marker_size": 3.0,
     "marker_to_fingertip": 9.0,
-    "marker_forward": 0.0,         # cm the claw marker sits out in front of the tips (away from the base)
+    "marker_forward": 0.0,
+    "arm_lengths": None,           # real arm [A, B, C, D] cm for the kinematic model (see `touch`)
+    "camera_correct": True,        # nudge each move with the claw marker reading         # cm the claw marker sits out in front of the tips (away from the base)
     "hover_extra": 6.0,
     "hand_height": 5.0,
     "chessboard_inner": [9, 6],
@@ -146,6 +148,8 @@ PATHS = {
     "babble_sim": "babble/samples_sim.jsonl",
     "body": "models/body.pt",
     "body_sim": "models/body_sim.pt",
+    "kinematic": "models/kinematic.json",
+    "touch": "touch_points.jsonl",
     "sessions": "sessions",
     "events": "events.json",
     "task": "models/task.json",

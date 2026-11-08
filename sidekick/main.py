@@ -81,6 +81,9 @@ class Stack:
 
 def load_body(cfg, stack=None):
     from .body_model import BodyModel
+    if not cfg["use_sim"] and C.path("kinematic").exists():
+        from .kinematics import KinematicBody
+        return KinematicBody.load(cfg)
     p = C.body_path(cfg)
     if p.exists():
         return BodyModel.load(p)
@@ -649,10 +652,103 @@ def cmd_claw(cfg, a):
         st.close()
 
 
+def _lengths(cfg):
+    L = cfg.get("arm_lengths")
+    if not L or len(L) != 4:
+        sys.exit("Set arm_lengths [A, B, C, D] (cm) in sidekick_data/config.json first: table to shoulder "
+                 "pivot, shoulder to elbow, elbow to wrist, wrist to the closed claw tips.")
+    return [float(v) for v in L]
+
+
+def cmd_touch(cfg, a):
+    """Collect touch points for the kinematic model: jog the claw straight down until
+    the tips touch the paper, then `save`. Spread 6-10 points over the area."""
+    import json as _json
+    from .body_model import read_claw
+    _lengths(cfg)
+    st = Stack(cfg, need_arm=True, hands=False)
+    arm = st.arm
+    out = C.path("touch")
+    print(__doc_touch__)
+    try:
+        while True:
+            n = len(open(out).readlines()) if out.exists() else 0
+            print(f"[{n} points]  now:", " ".join(f"J{i}={p}" for i, p in enumerate(arm.targets)))
+            parts = input("> ").strip().split()
+            if not parts:
+                continue
+            c = parts[0].lower()
+            try:
+                if c in ("q", "quit"):
+                    break
+                elif c.isdigit() and len(parts) == 2:
+                    j, v = int(c), parts[1]
+                    val = arm.targets[j] + int(v) if v[0] in "+-" else int(v)
+                    t = list(arm.targets)
+                    t[j] = max(cfg["hard_min"], min(cfg["hard_max"], val))
+                    arm._send("J " + " ".join(str(x) for x in t))
+                    arm.targets = t
+                elif c == "save":
+                    m = read_claw(st.source, 15, timeout=4.0, marker_to_fingertip=cfg["marker_to_fingertip"],
+                                  forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"],
+                                  bias=cfg.get("claw_normal_bias"))
+                    if m is None:
+                        print("  claw marker not seen; not saved (keep hands out of view)")
+                        continue
+                    pulses = arm.read()[:4] if hasattr(arm, "read") else list(arm.targets[:4])
+                    if any(v is None for v in pulses):
+                        pulses = list(arm.targets[:4])
+                    with open(out, "a") as f:
+                        f.write(_json.dumps({"p": pulses, "x": m["x"], "y": m["y"], "z": m["z"]}) + "\n")
+                    print(f"  saved point at x {m['x']:.1f}  y {m['y']:.1f}  (camera z {m['z']:.1f})")
+                elif c == "undo":
+                    if out.exists():
+                        lines = open(out).readlines()[:-1]
+                        open(out, "w").writelines(lines)
+                        print("  removed the last point")
+                elif c == "clear":
+                    out.unlink(missing_ok=True)
+                    print("  all points removed")
+                elif c == "fit":
+                    _fit_arm(cfg)
+                else:
+                    print(__doc_touch__)
+            except (ValueError, IndexError):
+                print("  bad command")
+    finally:
+        st.close()
+
+
+def _fit_arm(cfg):
+    from .kinematics import default_params, fit, load_points
+    pts = load_points()
+    if len(pts) < 4:
+        print(f"  need at least 4 touch points (have {len(pts)})")
+        return None
+    body, rms, worst = fit(default_params(cfg, _lengths(cfg)), pts, cfg["joint_min"], cfg["joint_max"])
+    body.save()
+    p = body.p
+    print(f"  fitted {len(pts)} points: average error {rms * 10:.1f} mm, worst {worst * 10:.1f} mm "
+          f"(good: under 5 mm). Saved {C.path('kinematic')}")
+    print(f"  offsets J0..J3 = {p['o0']:.0f} {p['o1']:.0f} {p['o2']:.0f} {p['o3']:.0f}, shoulder height "
+          f"{p['A']:.1f} cm, base at ({p['bx']:.1f}, {p['by']:.1f}), turntable direction {p['s0']:+.0f}")
+    return body
+
+
+def cmd_fit_arm(cfg, a):
+    _fit_arm(cfg)
+
+
+__doc_touch__ = """Touch points: jog the claw STRAIGHT DOWN until the tips just touch the paper, then type save.
+  <joint> <us> / <joint> +<us>   move (same as jog)      save    store this point
+  undo   remove the last point     clear   remove all     fit   fit the arm model     q   quit
+Do 6-10 points spread over where the arm will build: left, right, near, far."""
+
+
 COMMANDS = {
     "setup": cmd_setup, "markers": cmd_markers, "check": cmd_check, "jog": cmd_jog,
     "calib-lens": cmd_calib_lens, "calib-table": cmd_calib_table, "tune-colors": cmd_tune_colors,
-    "view": cmd_view, "claw": cmd_claw, "babble": cmd_babble, "train-body": cmd_train_body, "reach": cmd_reach,
+    "view": cmd_view, "claw": cmd_claw, "touch": cmd_touch, "fit-arm": cmd_fit_arm, "babble": cmd_babble, "train-body": cmd_train_body, "reach": cmd_reach,
     "goto-test": cmd_goto_test, "pick-test": cmd_pick_test, "presets": cmd_presets, "build": cmd_build,
     "ui": cmd_ui, "selftest": cmd_selftest, "simtest": cmd_simtest,
 }
