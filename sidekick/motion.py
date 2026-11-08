@@ -22,6 +22,8 @@ class Motion:
         self.clock = arm.clock
         self.roll = 1500
         self.claw = cfg["claw_open"]
+        self.obstacles = lambda: []         # builder sets: [(x, y, top cm)] the claw must not sweep through
+        self.carry_h = 0.0                  # height of the block in the claw (it hangs below the tips)
 
     # ---------------------------------------------------------------- helpers
     def base_yaw(self, x, y):
@@ -49,11 +51,46 @@ class Motion:
                 return True
 
     # ---------------------------------------------------------------- go to point
+    def _transit(self, x, y, z, claw, roll):
+        """Long moves: rise above everything along the way first. A straight joint move
+        can dip the claw (or the block it carries) through a tower it passes."""
+        if not self.cfg.get("transit_lift", True):
+            return "ok"
+        try:
+            cx, cy, cz = (float(v) for v in self.body.forward(list(self.arm.targets[:4]))[0][:3])
+        except Exception:
+            return "ok"
+        if math.hypot(x - cx, y - cy) < self.cfg.get("transit_min_cm", 5.0):
+            return "ok"
+        margin = self.cfg.get("transit_margin_cm", 4.0)
+        top = 0.0
+        for ox, oy, otop in self.obstacles():
+            if _seg_dist((ox, oy), (cx, cy), (x, y)) < margin:
+                top = max(top, otop)
+        need = top + self.cfg.get("transit_clearance", 1.5) + self.carry_h / 2
+        low = max(z, cz)
+        if need <= low + 0.3:
+            return "ok"                                 # already high enough the whole way
+        for zz in (need, need - 1.5, need - 3.0):
+            if zz <= low:
+                break
+            if self.body.solve([cx, cy, zz])["reachable"] and self.body.solve([x, y, zz])["reachable"]:
+                self.log(f"lifting to {zz:.1f} cm to clear {top:.1f} cm along the way")
+                r = self.go_to(cx, cy, zz, claw=claw, roll=roll, correct=False)
+                if r != "ok":
+                    return r
+                return self.go_to(x, y, zz, claw=claw, roll=roll, correct=False)
+        self.log(f"can't lift above {top:.1f} cm here; going the direct way")
+        return "ok"
+
     def go_to(self, x, y, z, claw=None, roll=None, correct=True):
         """-> "ok" | "unreachable" | "abort" """
         claw = self.claw if claw is None else claw
         correct = correct and self.cfg.get("camera_correct", True)
         roll = self.roll if roll is None else roll
+        r = self._transit(x, y, z, claw, roll)
+        if r != "ok":
+            return r
         target = (x, y, z)
         aim = list(target)
         sol = self.body.solve(aim)
@@ -114,6 +151,7 @@ class Motion:
             if r[0] != "ok":
                 return r[0]
             _, x, y, grip_axis = r
+        before = len(self._loose_near(blk, x - dx, y - dy))     # seen with the claw out of the way
         roll = self.roll_for(grip_axis, x, y)
         r = self.go_to(x, y, hover, claw=open_, roll=roll)
         if r != "ok":
@@ -139,25 +177,56 @@ class Motion:
         if self.cfg["force_sensors"]:
             ok = bool(self.arm.holding())
         else:
-            # A long block in the claw (roof, plank) sticks out past the blanked circle
-            # around the claw and still looks like "a block on the pick spot". Slide
-            # toward the build strip first: a held block comes along, a missed one stays.
-            x0, x1, y0, y1 = self.cfg["layout"]["build_area"]
-            vx, vy = (x0 + x1) / 2 - x, (y0 + y1) / 2 - y
-            n = math.hypot(vx, vy) or 1.0
-            moved = self.go_to(x + 4 * vx / n, y + 4 * vy / n, hover, claw=self.claw, roll=roll,
-                               correct=False) == "ok"
-            self.clock.sleep(0.3)
-            same = (lambda b: True) if not self.cfg["use_color"] else (
-                lambda b: b["color"] == blk["color"] and b.get("type") == blk.get("type"))
-            near = 2.0 if moved else 2.5
-            ok = not any(same(b) and math.hypot(b["x"] - x, b["y"] - y) < near for b in self.get_blocks())
+            # Count the loose blocks around the pick spot with the claw moved off to the
+            # side (right above, the claw hides them; a long block in the claw would
+            # also look like one still lying there). A real pick leaves one fewer, even
+            # if the block got pushed before the claw closed.
+            stand = self._stand_point(x, y, hover)
+            if stand is not None:
+                self.go_to(*stand, hover, claw=self.claw, roll=roll, correct=False)
+            self.clock.sleep(self.cfg.get("pick_look_s", 0.6))
+            after = len(self._loose_near(blk, x - dx, y - dy))
+            ok = after < before if before else after == 0
+            if not ok:
+                self.log(f"pick check: {before} block(s) near the spot before, {after} after: missed")
         if not ok:
             self.set_claw(open_)
             return "miss"
+        self.carry_h = h
         return "ok"
 
     # ---------------------------------------------------------------- live tracking
+    def _loose_near(self, blk, x, y, radius=6.0):
+        """Loose blocks of the same kind within `radius` cm (never the ones already built)."""
+        out = []
+        for b in self.get_blocks():
+            if b.get("zone") == "build" or self.cfg.in_build(b["x"], b["y"]):
+                continue
+            if self.cfg["use_color"] and (b["color"] != blk.get("color") or b.get("type") != blk.get("type")):
+                continue
+            if math.hypot(b["x"] - x, b["y"] - y) <= radius:
+                out.append(b)
+        return out
+
+    def _stand_point(self, x, y, z):
+        """A reachable point `pick_look_cm` from (x, y) from where the camera sees the
+        spot clear of the claw: toward the base first (links out of view), then
+        toward the build strip, then either side."""
+        stand = self.cfg.get("pick_look_cm", 10.0)
+        bx, by = self.cfg["layout"]["base"]
+        x0, x1, y0, y1 = self.cfg["layout"]["build_area"]
+        dirs = []
+        for vx, vy in ((bx - x, by - y), ((x0 + x1) / 2 - x, (y0 + y1) / 2 - y)):
+            n = math.hypot(vx, vy) or 1.0
+            dirs.append((vx / n, vy / n))
+        ux, uy = dirs[0]
+        dirs += [(-uy, ux), (uy, -ux), ((ux - uy) / 1.414, (uy + ux) / 1.414), ((ux + uy) / 1.414, (uy - ux) / 1.414)]
+        for ux, uy in dirs:
+            sx, sy = x + stand * ux, y + stand * uy
+            if self.cfg.in_work_area(sx, sy) and self.body.solve([sx, sy, z])["reachable"]:
+                return sx, sy
+        return None
+
     def _locate(self, blk, x, y, radius=10.0):
         """Fresh camera fix on the block we're after: the nearest loose block of the
         same kind within `radius` cm of where we last saw it (it may have been bumped)."""
@@ -176,17 +245,16 @@ class Motion:
         """Stop short of the block where the camera sees both it and the claw (right
         above it, the claw hides it), take a fresh fix, and follow the block if it
         moved. -> ("ok", x, y, grip_axis) | ("moved"|"unreachable"|"abort",)"""
-        stand = self.cfg.get("pick_look_cm", 7.0)
+        # the camera blanks ~5 cm around the claw marker: stand off far enough that the
+        # whole block is outside that circle, or its outline (and centre) comes out clipped
         yaw = blk.get("yaw", 0.0)
         dx, dy = self.cfg.get("pick_offset", [0.0, 0.0])      # fixes are raw camera positions
         for look in range(3):
-            bx, by = self.cfg["layout"]["base"]
-            vx, vy = bx - x, by - y                        # stop short on the arm's side: links stay out of view
-            n = math.hypot(vx, vy) or 1.0
-            sx, sy = x + stand * vx / n, y + stand * vy / n
-            if not self.body.solve([sx, sy, hover])["reachable"]:
-                return ("ok", x, y, grip_axis)             # can't stand off here: go straight in
-            r = self.go_to(sx, sy, hover, claw=claw, roll=self.roll_for(grip_axis, x, y))
+            stand = self._stand_point(x, y, hover)
+            if stand is None:
+                self.log("no place to look from here; going straight in")
+                return ("ok", x, y, grip_axis)
+            r = self.go_to(*stand, hover, claw=claw, roll=self.roll_for(grip_axis, x, y))
             if r != "ok":
                 return (r,)
             self.clock.sleep(self.cfg.get("pick_look_s", 0.6))   # a few fresh frames for the tracker
@@ -215,8 +283,15 @@ class Motion:
         if r != "ok":
             return r
         self.set_claw(self.cfg["claw_open"])
+        self.carry_h = 0.0
         self.clock.sleep(0.2)
-        return self.go_to(x, y, hover, roll=roll, correct=False)
+        r = self.go_to(x, y, hover, roll=roll, correct=False)
+        if r == "ok" and self.cfg.get("pick_track", True):
+            stand = self._stand_point(x, y, hover)      # step aside so the camera can check the placement
+            if stand is not None:
+                self.go_to(*stand, hover, roll=roll, correct=False)
+                self.clock.sleep(self.cfg.get("pick_look_s", 0.6))
+        return r
 
     def home(self):
         return self._move(list(self.cfg["ready"]))
@@ -240,3 +315,13 @@ class Motion:
 
     def listen(self):
         return gestures.listen(self)
+
+
+def _seg_dist(p, a, b):
+    """2-D distance from point p to segment a-b."""
+    ax, ay = a
+    bx, by = b
+    vx, vy = bx - ax, by - ay
+    t = ((p[0] - ax) * vx + (p[1] - ay) * vy) / (vx * vx + vy * vy or 1.0)
+    t = min(1.0, max(0.0, t))
+    return math.hypot(p[0] - (ax + t * vx), p[1] - (ay + t * vy))

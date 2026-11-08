@@ -20,6 +20,7 @@ import threading
 import time
 
 from . import config as C
+from . import hand_signs
 from .catalog import block_yaw_from_long_axis, fold180
 from .motion import Motion
 from .perception import BlockTracker, classify, claw_tip, tip_from_pixel
@@ -59,8 +60,15 @@ class Builder:
         self._start_lock = threading.Lock()      # two Build clicks can't both start a run
         self.run_id = 0                          # every build gets a new id; the UI ignores other runs
         self.paused = False                      # user pause (separate from the safety stop)
+        # hand signs seen by the camera: palm = pause, thumbs up = go on / done, point = "there"
+        self.pointed = None                      # (x, y, t) where a hand last pointed (for the voice agent)
+        self._signs = hand_signs.SignFilter(hold_s=cfg.get("hand_sign_hold", 0.5))
+        self._palm_paused = False                # paused by an open palm (a thumbs up may resume it)
+        self._confirm = threading.Event()        # thumbs up while a prompt waits = "done"
+        self.status.update({"sign": None, "pointed": None})
         self.motion = Motion(cfg, arm, body, catalog, self.read_claw, self.active_blocks,
                              self.abort, self.wait_resume, log=self.log)
+        self.motion.obstacles = self._obstacles
         stamp = time.strftime("%Y%m%d_%H%M%S")
         self.log_path = C.path("logs", log_dir) / f"run_{stamp}.jsonl"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +120,10 @@ class Builder:
                 if b.get("type"):
                     b["yaw"] = block_yaw_from_long_axis(b.get("angle", 0.0), b["type"], self.catalog)
             self._safety(obs)
+            try:
+                self._hand_signs(obs)            # after the safety check, never instead of it
+            except Exception as e:
+                self.log(f"hand sign error: {e!r}")
             with self.cond:
                 self.obs, self.blocks, self.hands = obs, blocks, obs.hands
                 if obs.claw is not None:
@@ -163,7 +175,57 @@ class Builder:
                 self.log("clear: resuming")
                 self.set_mode(self.mode)
 
+    def _hand_signs(self, obs):
+        """Filtered hand signs -> pause / resume / confirm / pointed. Runs on the
+        vision thread, so it only flips flags (pause() stops the arm, like the
+        safety stop); it never moves the arm and never clears a safety stop."""
+        if not self.cfg.get("hand_signs", True):
+            return
+        sign, hand = hand_signs.pick(obs.hands)
+        pos = (hand["x"], hand["y"]) if hand is not None else None
+        fired = self._signs.update(sign, obs.t, pos)
+        if self._signs.active == "point" and hand is not None:
+            at = hand.get("point_at") or pos
+            self.pointed = (float(at[0]), float(at[1]), float(obs.t))
+            with self.lock:
+                self.status["pointed"] = list(self.pointed)
+        if fired is None:
+            return
+        with self.lock:
+            self.status["sign"] = {"sign": fired, "t": round(obs.t, 2)}
+        if fired == "palm":
+            if self.busy() and not self.paused and self.pause():
+                self._palm_paused = True
+                self.log("paused: open palm")
+                self.action("paused: open palm (thumbs up to go on)")
+        elif fired == "thumbs_up":
+            if self.paused and self._palm_paused:
+                self.resume()
+                self.log("resumed: thumbs up")
+            elif self.status.get("prompt"):
+                self._confirm.set()
+                self.log("confirmed: thumbs up")
+            else:
+                self.log("thumbs up")
+        elif fired == "point" and self.pointed is not None:
+            x, y = self.pointed[:2]
+            self.log(f"pointed at ({x:.1f}, {y:.1f})", x=round(x, 1), y=round(y, 1))
+
     # ================================================================ helpers for motion
+    def _obstacles(self):
+        """What the claw must not sweep through: blocks built so far (known heights)
+        and loose blocks the camera sees (unknown kind: assume the tallest)."""
+        with self.lock:
+            states = [s.get("state") for s in self.status.get("steps", [])]
+            steps = list(self.plan_steps)
+            loose = [dict(b) for b in self.blocks]
+        out = [(s["x"], s["y"], s["z"] + s["h"]) for s, st in zip(steps, states) if st == "done"]
+        tallest = max(self.catalog.height(t) for t in self.catalog.types)
+        for b in loose:
+            h = self.catalog.height(b["type"], b.get("pose", 0)) if b.get("type") else tallest
+            out.append((b["x"], b["y"], float(b.get("z") or 0.0) + h))
+        return out
+
     def active_blocks(self):
         with self.lock:
             return [dict(b) for b in self.blocks]
@@ -201,7 +263,10 @@ class Builder:
 
     def wait_resume(self):
         """Called by motion while the safety stop or a user pause is active."""
-        self.action("paused" if self.paused and not self.safety_stopped else "paused: hand near the arm")
+        if self.paused and not self.safety_stopped:
+            self.action("paused: open palm (thumbs up to go on)" if self._palm_paused else "paused")
+        else:
+            self.action("paused: hand near the arm")
         while self.abort.is_set():
             if self.cancel.is_set() or self._quit.is_set():
                 return False
@@ -243,6 +308,7 @@ class Builder:
         self.paused = True
         self.abort.set()
         self.arm.stop()
+        self._palm_paused = False                # the palm handler sets it again if it was a palm
         with self.lock:
             self.status["paused"] = True
         self.log("paused")
@@ -252,6 +318,7 @@ class Builder:
         if not self.paused:
             return False
         self.paused = False
+        self._palm_paused = False
         with self.lock:
             self.status["paused"] = False
         if not self.safety_stopped:
@@ -391,9 +458,13 @@ class Builder:
     def _at_pickup(self, st, exclude=()):
         """Colorless mode: whatever block sits on the pickup spot is the one we asked for."""
         px, py = self.cfg["layout"]["pickup"]
-        for b in self.active_blocks():
-            if b["id"] in exclude or math.hypot(b["x"] - px, b["y"] - py) > 3.0:
-                continue
+        # nearest loose block within reach of the spot: a bumped block a few cm off is still ours
+        radius = self.cfg.get("pickup_radius", 6.0)
+        near = sorted((math.hypot(b["x"] - px, b["y"] - py), i, b) for i, b in enumerate(self.active_blocks())
+                      if b["id"] not in exclude and not self.cfg.in_build(b["x"], b["y"]))
+        for d, _, b in near:
+            if d > radius:
+                break
             b = dict(b)
             b["type"], b["color"] = st["type"], st["color"]
             b["z"] = 0.0
@@ -401,7 +472,9 @@ class Builder:
             b["yaw"] = block_yaw_from_long_axis(b.get("angle", 0.0), st["type"], self.catalog, b["pose"])
             if b.get("size"):
                 fp = sorted(self.catalog.size(st["type"], b["pose"])[:2], reverse=True)
-                if abs(b["size"][0] - fp[0]) > 1.5 or abs(b["size"][1] - fp[1]) > 1.5:
+                # the overhead camera also sees a block's sides: taller blocks look bigger
+                tol = 1.5 + 0.3 * self.catalog.height(st["type"], b["pose"])
+                if abs(b["size"][0] - fp[0]) > tol or abs(b["size"][1] - fp[1]) > tol:
                     # clearly the wrong block (e.g. left over from a stopped build): don't build with it
                     msg = (f"Wrong block on the pickup spot. Swap it for a "
                            f"{self.catalog.types[st['type']]['name'].lower()}.")
@@ -452,6 +525,14 @@ class Builder:
             return False
         return now - b.get("first_seen", now) >= still
 
+    def _clear_or_confirmed(self, b):
+        """_hand_clear, or a thumbs up said the block is there (skips the stand-still
+        wait, but a hand must still be 10 cm away from the block)."""
+        if self._hand_clear(b):
+            return True
+        return self._confirm.is_set() and not any(
+            math.hypot(h["x"] - b["x"], h["y"] - b["y"]) < 10.0 for h in self.hands)
+
     def _wait_for_block(self, st):
         """Ask for a block (sim person, or a prompt in the UI) and wait for it."""
         name = self.catalog.types[st['type']]['name'].lower()
@@ -471,12 +552,14 @@ class Builder:
         if self.feeder is not None:
             self.feeder.request(st["type"], st["color"], st.get("pose", 0))
         t0 = self.clock.time()
+        self._confirm.clear()
         while not self.cancel.is_set():
             b = self._find_supply(st)
-            if b is not None and self._hand_clear(b):
+            if b is not None and self._clear_or_confirmed(b):
                 self.clock.sleep(1.0)                 # let the hand clear first
                 b = self._find_supply(st)
-                if b is not None and not self.safety_stopped and self._hand_clear(b):
+                if b is not None and not self.safety_stopped and self._clear_or_confirmed(b):
+                    self._confirm.clear()
                     with self.lock:
                         self.status["prompt"] = None
                     self.set_mode("building")

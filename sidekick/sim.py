@@ -280,6 +280,14 @@ class SimPerson:
         self.blocked_for = 0.0
         self.blocked_total = 0.0
         self.waiting_for_spot = 0.0
+        self.sign = None                      # hand sign being shown ("palm", "thumbs_up", "point", ...)
+        self.point_at = None                  # (x, y) table cm, for "point"
+        self.signs = []                       # queued (sign, at, hold_s, point_at)
+        self.sign_until = 0.0
+
+    def show_sign(self, sign, at, hold_s=1.5, point_at=None):
+        """Queue a hand sign: walk the hand to `at`, hold `sign` for hold_s, leave."""
+        self.signs.append((sign, (float(at[0]), float(at[1])), float(hold_s), point_at))
 
     def request(self, tid, color, pose=0):
         self.requests.append((tid, color, pose))
@@ -302,6 +310,14 @@ class SimPerson:
 
     def step(self, dt, now):
         if self.state == "away":
+            if self.signs:
+                sign, at, hold, pt = self.signs.pop(0)
+                self.home = np.array([float(np.clip(at[0], 5, 45)), self.rng.uniform(-10, -5)])
+                self.hand = self.home.copy()
+                self._sign_hold, self.sign, self.point_at = hold, sign, (pt or at)
+                self.open = sign == "palm"
+                self._start(at, "sign_in")
+                return
             if self.requests:
                 tid, color, pose = self.requests.pop(0)
                 spot = self.w.free_supply_spot() if self.w.cfg["use_color"] else self.w.pickup_spot()
@@ -328,7 +344,11 @@ class SimPerson:
         claw = self.w.truth()
         if claw["finger"][2] < 20 and self.state != "poke":
             nxt = self._pos_at(min(1.0, (self.t_path + dt) / self.dur))
-            if np.hypot(*(nxt - claw["finger"][:2])) < self.pause_cm:
+            d_next = np.hypot(*(nxt - claw["finger"][:2]))
+            d_now = np.hypot(*(np.asarray(self.hand, float) - claw["finger"][:2]))
+            # a person waits rather than push toward the claw, but always pulls away
+            # (else hand and arm each wait for the other forever)
+            if d_next < self.pause_cm and d_next <= d_now:
                 self.blocked_for += dt                 # wait for the arm...
                 self.blocked_total += dt
                 if self.blocked_total > 6.0:
@@ -365,6 +385,13 @@ class SimPerson:
         elif self.state == "linger":
             if now >= self.palm_until:
                 self._start(self.home, "back")
+        elif self.state == "sign_in":
+            self.state, self.sign_until = "signing", now + self._sign_hold
+        elif self.state == "signing":
+            if now >= self.sign_until:
+                self._start(self.home, "sign_out")
+        elif self.state == "sign_out":
+            self.state, self.hand, self.sign, self.point_at, self.open = "away", None, None, None, True
         elif self.state == "back":
             self.state, self.hand = "away", None
 
@@ -552,10 +579,37 @@ class World:
         hands = []
         if self.person.hand is not None:
             hx, hy = self.person.hand + rng.normal(0, 0.3, 2)
-            hands.append({"x": float(hx), "y": float(hy), "open": bool(self.person.open)})
+            hands.append(self._sign_fields({"x": float(hx), "y": float(hy), "open": bool(self.person.open)}))
         return Observation(t=t, claw=claw, detections=dets, hands=hands)
 
+    def _sign_fields(self, hand, sign=None, point_at=None):
+        """Add the person's hand sign to an observed hand dict (the sim has no landmarks).
+        Only once the hand has arrived: walking in, it has no clear shape yet."""
+        p = self.person
+        if sign is None and p.state == "signing":
+            sign, point_at = p.sign, p.point_at
+        if sign:
+            hand["sign"] = sign
+            if sign == "point":
+                hand["point_at"] = tuple(point_at) if point_at is not None else (hand["x"], hand["y"])
+        return hand
+
     # ---- API used by the builder, tests and the viewer
+    def show_sign(self, sign, at=None, hold_s=1.5, point_at=None):
+        """The person shows a hand sign: the hand walks in to `at` (default: the
+        front of the table), well outside the claw's safety radius, holds the sign
+        for hold_s seconds and leaves. Queued if the person is busy."""
+        claw = self.truth()["finger"][:2]
+        if at is None:
+            at = (float(np.clip(claw[0], 10, 40)), 4.0)
+        at = np.array(at, float)
+        keep = self.cfg["stop_distance"] + 5.0
+        d = at - claw
+        if np.hypot(*d) < keep:                       # never sign inside the safety radius
+            at = claw + (d / (np.hypot(*d) + 1e-9) if np.hypot(*d) > 1e-6 else np.array([0, -1.0])) * keep
+        self.person.show_sign(sign, (float(at[0]), float(at[1])), hold_s, point_at)
+        return (float(at[0]), float(at[1]))
+
     def truth(self):
         return self.arm.pose()
 

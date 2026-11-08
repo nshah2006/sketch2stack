@@ -13,8 +13,10 @@ $SIDEKICK_DATA), so any step can be redone on its own.
 import argparse
 import json
 import math
+import os
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -33,7 +35,10 @@ class Stack:
         self.cfg, self.catalog = cfg, Catalog.load()
         self.world = self.arm = self.source = self.body = None
         if cfg["use_sim"]:
-            from .sim import make_world
+            if cfg.get("sim_backend") == "twin":     # MuJoCo twin: rendered camera through real perception
+                from .twin import make_twin as make_world
+            else:
+                from .sim import make_world
             self.world = make_world(cfg, self.catalog, speed=speed)
             self.source = self.world
             self.clock = self.world.clock
@@ -91,9 +96,10 @@ def load_body(cfg, stack=None):
     if cfg["use_sim"] and stack is not None and stack.arm is not None:
         print("No simulator body model yet: babbling and training one now (about a minute).")
         speed = stack.clock.speed
-        stack.clock.set_speed(40)              # babble the simulated arm fast...
+        twin = cfg.get("sim_backend") == "twin"  # the twin renders every frame: 40x would drop most of them
+        stack.clock.set_speed(10 if twin else 40)   # babble the simulated arm fast...
         try:
-            return babble_and_train(cfg, stack, n=cfg["babble_samples"])
+            return babble_and_train(cfg, stack, n=600 if twin else cfg["babble_samples"])
         finally:
             stack.clock.set_speed(speed)       # ...then run the UI at the speed asked for
     sys.exit(f"No body model at {p}. Run `babble` then `train-body` first.")
@@ -991,6 +997,20 @@ COMMANDS = {
 }
 
 
+GL_DIR = "/mnt/Data/Tushaar/nvidia_userspace"
+
+
+def _gl_env(gl_dir):
+    """Env for GPU rendering with user-space NVIDIA libs (no root). Same as fleet.py."""
+    g = Path(gl_dir)
+    env = dict(os.environ)
+    env["LD_LIBRARY_PATH"] = f"{g / 'lib'}:{env.get('LD_LIBRARY_PATH', '')}"
+    env["__EGL_VENDOR_LIBRARY_FILENAMES"] = str(g / "egl_nvidia.json")
+    env["VK_ICD_FILENAMES"] = str(g / "vk_nvidia_icd.json")
+    env["MUJOCO_GL"] = "egl"
+    return env
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="sidekick", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1009,13 +1029,25 @@ def main(argv=None):
     ap.add_argument("--zero", action="store_true", help="claw: learn the claw marker's tilt bias (tips on the paper)")
     ap.add_argument("--apply", action="store_true", help="reach: move the build/supply zones onto the reachable area")
     ap.add_argument("--quick", action="store_true", help="selftest: skip the slow simulator build")
+    ap.add_argument("--twin", action="store_true",
+                    help="sim: use the MuJoCo digital twin (rendered camera, rigid-body blocks)")
     a = ap.parse_args(argv)
     over = {}
     if a.sim:
         over["use_sim"] = True
+    if a.twin:
+        over["sim_backend"] = "twin"
+        gl = os.environ.get("SIDEKICK_GL") or (GL_DIR if Path(GL_DIR).exists() else "")
+        if gl and "__EGL_VENDOR_LIBRARY_FILENAMES" not in os.environ:   # GPU GL libs: re-exec with them
+            os.execve(sys.executable, [sys.executable, "-m", "sidekick"] + list(argv or sys.argv[1:]), _gl_env(gl))
     if a.real:
         over["use_sim"] = False
     cfg = C.load(overrides=over)
+    if cfg["use_sim"] and cfg.get("sim_backend") == "twin":
+        # the default left-back pickup corner is at the edge of accurate reach for the twin's arm
+        cfg["layout"]["pickup"] = list(cfg.get("twin_pickup", [35.0, 30.0]))
+        if cfg.get("sim_seed") is None:
+            cfg["sim_seed"] = 100            # same flawed arm every start, so its saved body model stays valid
     COMMANDS[a.command](cfg, a)
 
 

@@ -24,4 +24,4 @@ exec "$LR/bin/lerobot-train" \
   --policy.type="$POLICY" --policy.device=cuda --policy.push_to_hub=false \
   --output_dir="$OUT" --job_name="sidekick_$POLICY" \
   --steps="$STEPS" --batch_size="$BS" --num_workers=8 \
-  --save_freq=5000 --log_freq=100 --trackio.enable=false
+  --save_freq=${SAVE_FREQ:-5000} --log_freq=100 --trackio.enable=false

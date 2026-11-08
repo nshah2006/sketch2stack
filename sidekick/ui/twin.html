@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidekick Twin</title>
+<style>
+  :root { --bg: #f5f5f3; --card: #fff; --ink: #222; --mute: #777; --line: #ddd; --accent: #2f7d4f; --stop: #c0392b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 15px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  .views { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .views figure { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+  .views img { width: 100%; display: block; border-radius: 4px; background: #ccc; min-height: 120px; }
+  figcaption { color: var(--mute); font-size: 12px; padding-top: 4px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+  input[type=text] { flex: 1 1 260px; padding: 9px 10px; font-size: 15px; border: 1px solid var(--line); border-radius: 6px; }
+  button { padding: 9px 14px; font-size: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.stop { background: var(--stop); color: #fff; border-color: var(--stop); }
+  button.live { background: #e67e22; color: #fff; }
+  #reply { margin-top: 10px; min-height: 1.4em; font-weight: 600; }
+  #status { margin-top: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  #log { font: 12px/1.35 ui-monospace, monospace; color: var(--mute); max-height: 180px; overflow-y: auto; white-space: pre-wrap; margin-top: 6px; }
+</style>
+</head>
+<body>
+<h1>Sidekick digital twin</h1>
+<div class="views">
+  <figure><img id="view" alt="3D view of the twin"><figcaption>3D view (MuJoCo)</figcaption></figure>
+  <figure><img id="frame" alt="Overhead camera with overlay"><figcaption>Overhead camera + what perception sees</figcaption></figure>
+</div>
+
+<div class="row">
+  <input id="cmd" type="text" placeholder="Say or type: build the bridge, hand me a cube, stop, go on...">
+  <button class="primary" id="send">Send</button>
+  <button id="mic" title="Speak a command">Mic</button>
+  <button class="stop" id="stopbtn">Stop</button>
+</div>
+<div id="reply"></div>
+<div class="row" id="presets"></div>
+
+<div id="status">
+  <div id="mode">connecting...</div>
+  <div id="log"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+async function post(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  return r.json();
+}
+
+async function command(text) {
+  text = (text || '').trim();
+  if (!text) return;
+  $('reply').textContent = '...';
+  try {
+    const r = await post('/api/command', { text });
+    $('reply').textContent = (r.reply || r.error || '') + (r.intent ? '  [' + r.intent.intent + ']' : '');
+  } catch (e) { $('reply').textContent = 'error: ' + e; }
+}
+
+$('send').onclick = () => { command($('cmd').value); $('cmd').value = ''; };
+$('cmd').onkeydown = e => { if (e.key === 'Enter') $('send').onclick(); };
+$('stopbtn').onclick = () => command('stop');
+
+// browser speech recognition (Chrome/Edge); falls back to typing
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) { $('mic').disabled = true; $('mic').title = 'No speech recognition in this browser'; }
+$('mic').onclick = () => {
+  const rec = new SR();
+  rec.lang = 'en-US'; rec.interimResults = false; rec.maxAlternatives = 1;
+  $('mic').classList.add('live');
+  rec.onresult = e => { const t = e.results[0][0].transcript; $('cmd').value = t; command(t); };
+  rec.onerror = e => { $('reply').textContent = 'mic: ' + e.error; };
+  rec.onend = () => $('mic').classList.remove('live');
+  rec.start();
+};
+
+async function loadPresets() {
+  try {
+    const r = await (await fetch('/api/presets')).json();
+    for (const b of r.builds || []) {
+      const btn = document.createElement('button');
+      btn.textContent = b.name || b.id;
+      btn.onclick = async () => {
+        const res = await post('/api/build', { build: b });
+        $('reply').textContent = res.ok ? 'Building ' + (b.name || b.id).toLowerCase() + '.'
+          : 'Can\'t build: ' + (res.problems || []).filter(p => p.level === 'error').map(p => p.msg).join('; ');
+      };
+      $('presets').appendChild(btn);
+    }
+  } catch (e) { $('presets').textContent = 'presets unavailable: ' + e; }
+}
+
+function refreshImages() {
+  const t = Date.now();
+  for (const [id, url] of [['view', '/api/view.jpg'], ['frame', '/api/frame.jpg']]) {
+    const img = new Image();
+    img.onload = () => { $(id).src = img.src; };
+    img.src = url + '?t=' + t;
+  }
+}
+
+async function refreshStatus() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    let line = (s.safety ? 'SAFETY STOP - ' : '') + (s.mode || '') + (s.paused ? ' (paused)' : '') + ': ' + (s.action || '');
+    if (s.total) line += '   block ' + Math.min(s.step + 1, s.total) + ' / ' + s.total;
+    if (s.result) line += '   result: ' + s.result;
+    if (s.prompt) line += '   >> ' + s.prompt;
+    $('mode').textContent = line;
+    $('log').textContent = (s.log || []).slice(-15).join('\n');
+  } catch (e) { $('mode').textContent = 'server unreachable'; }
+}
+
+loadPresets();
+setInterval(refreshImages, 200);
+setInterval(refreshStatus, 500);
+refreshImages(); refreshStatus();
+</script>
+</body>
+</html>

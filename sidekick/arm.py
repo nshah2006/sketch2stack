@@ -36,6 +36,7 @@ class Arm:
         self._reply = None
         self._reply_event = threading.Event()
         self.targets = list(cfg["home"])
+        self.step_us = int(cfg["step_us"])     # firmware speed last set (us per 20 ms tick)
         # latest report
         self.force = [0, 0]
         self.battery_v = None
@@ -154,9 +155,39 @@ class Arm:
         self._send("J " + " ".join(str(p) for p in self.targets))
         return self.targets
 
+    def _stream(self, goal, abort=None):
+        """Ease from the current targets to `goal` with a minimum-jerk profile, streamed
+        as small J steps at 50 Hz: every joint starts and stops gently and they all
+        arrive together (the firmware alone moves each joint at the same rate, so short
+        joints finish first, the claw path bends and stops are abrupt)."""
+        start = list(self.targets)
+        span = max(abs(g - s) for g, s in zip(goal, start))
+        if span < 30:
+            return True
+        rate = self.step_us / 0.020                     # us per second at the speed set now
+        T = max(0.25, span / rate)
+        peak = int(min(30, max(self.step_us, round(1.875 * 1.25 * self.step_us))))
+        self._send(f"V {peak}")                         # let the firmware keep up with the curve's peak
+        try:
+            t0 = self.clock.time()
+            while True:
+                if abort is not None and abort.is_set():
+                    return False
+                tau = min(1.0, (self.clock.time() - t0) / T)
+                sm = tau ** 3 * (10 - 15 * tau + 6 * tau * tau)
+                self.send_targets([round(s + (g - s) * sm) for s, g in zip(start, goal)])
+                if tau >= 1.0:
+                    return True
+                self.clock.sleep(0.02)
+        finally:
+            self._send(f"V {self.step_us}")
+
     def move(self, pulses, timeout=15.0, abort=None):
         """Send targets and wait until the Uno reports it stopped moving.
         Returns True when done, False on abort or timeout."""
+        if self.cfg.get("smooth_moves", True):
+            if not self._stream(self.clamp(pulses), abort):
+                return False
         self.send_targets(pulses)
         sent = self.clock.time()
         end = sent + timeout
@@ -183,6 +214,7 @@ class Arm:
         self._send(f"L {int(n)}")
 
     def speed(self, step_us):
+        self.step_us = int(step_us)
         self._send(f"V {int(step_us)}")
 
     def detach(self):

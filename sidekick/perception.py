@@ -299,9 +299,25 @@ class HandTracker:
             wrist = pts[0]
             n_open = sum(np.linalg.norm(pts[tip] - wrist) > 1.5 * np.linalg.norm(pts[base] - wrist)
                          for tip, base in self.FINGERS)
-            hands.append({"x": tab[0], "y": tab[1], "open": bool(n_open >= 3),
-                          "px": pts.tolist()})
+            hand = {"x": tab[0], "y": tab[1], "open": bool(n_open >= 3), "px": pts.tolist()}
+            self._add_sign(hand, pts, calib)
+            hands.append(hand)
         return hands
+
+    def _add_sign(self, hand, pts, calib):
+        """hand["sign"] (hand_signs.classify), and for "point" also where it points."""
+        if not self.cfg.get("hand_signs", True):
+            return
+        from . import hand_signs
+        hand["sign"] = hand_signs.classify(pts)
+        if hand["sign"] == "point":
+            hz = self.cfg["hand_height"]
+            mcp, tip = (calib.pixel_to_table(pts[i][0], pts[i][1], hz) for i in (5, 8))
+            if mcp is not None and tip is not None:
+                lm = {5: mcp, 8: tip}
+                at = hand_signs.point_target(lm, self.cfg.get("point_extend_cm", 0.0))
+                hand["point_at"] = (float(at[0]), float(at[1]))
+                hand["point_dir"] = hand_signs.point_ray(lm)[1]
 
 
 # ===================================================================== real pipeline

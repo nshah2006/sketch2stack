@@ -365,13 +365,77 @@ def test_speech(cfg):
                    f"multipart={ok} no_key_503={nokey} too_big_413={big}")
 
 
+def test_hand_signs(cfg):
+    from . import hand_signs as H
+    rng = np.random.default_rng(3)
+    total = good = 0
+    for sign in H.SIGNS:
+        for _ in range(40):
+            pts = H.synth(sign, cx=rng.uniform(100, 500), cy=rng.uniform(100, 300),
+                          scale=rng.uniform(0.4, 1.2), angle_deg=rng.uniform(-180, 180))
+            pts = [(x + rng.normal(0, 1.0), y + rng.normal(0, 1.0)) for x, y in pts]
+            total += 1
+            good += H.classify(pts) == sign
+    junk = H.classify([(0.0, 0.0)] * 5) is None
+    tip, u = H.point_ray({5: (10.0, 10.0), 8: (10.0, 14.0)})
+    ray = tip == (10.0, 14.0) and u == (0.0, 1.0) and H.point_target({5: (10.0, 10.0), 8: (10.0, 14.0)}, 6.0) == (10.0, 20.0)
+    blk = H.pointed_block(tip, [{"x": 10.5, "y": 25.0, "id": 1}, {"x": 20.0, "y": 14.0, "id": 2}], u)
+    ray = ray and blk is not None and blk["id"] == 1
+    # temporal filter at 30 fps: fires once after 0.5 s, re-arms on change, forgives one lost frame
+    f = H.SignFilter(hold_s=0.5)
+    fires = [(round(k / 30, 2), f.update("palm" if k != 5 else None, k / 30, (0, 0))) for k in range(45)]
+    got = [t for t, s in fires if s]
+    once = len(got) == 1 and 0.5 <= got[0] < 0.6
+    again = [k / 30 for k in range(45, 75) if f.update("thumbs_up", k / 30, (0, 0))]
+    again = len(again) == 1 and again[0] >= 2.0 and f.active == "thumbs_up"
+    f2 = H.SignFilter(hold_s=0.5)
+    moving = not any(f2.update("palm", k / 30, (k * 0.5, 0)) for k in range(45))   # 15 cm/s: a hand passing by
+    f3 = H.SignFilter(hold_s=0.5)
+    seq = ["palm"] * 12 + [None] * 9 + ["palm"] * 30      # 0.4 s, gone for 0.3 s, back
+    hits = [k / 30 for k, sg in enumerate(seq) if f3.update(sg, k / 30)]
+    reset = len(hits) == 1 and hits[0] >= 21 / 30 + 0.5 - 1e-6
+    ok = good == total and junk and ray and once and again and moving and reset
+    return _report("hand signs (palm, thumbs up, point, fist) + hold filter", ok,
+                   f"{good}/{total} synthetic hands, ray={ray} once={once} rearm={again} "
+                   f"moving_ignored={moving} gap_reset={reset}")
+
+
+def test_intents(cfg):
+    from . import intents
+    cat = Catalog.load()
+    cases = {
+        "Stop!": ("stop", {}), "hold on a sec": ("pause", {}), "wait": ("pause", {}), "freeze": ("stop", {}),
+        "cancel the build": ("cancel", {}), "go on": ("resume", {}), "okay go": ("resume", {}),
+        "continue please": ("resume", {}),
+        "build the house": ("preset", {"preset": "house"}), "Build the bridge.": ("preset", {"preset": "bridge"}),
+        "make the gate": ("preset", {"preset": "gate"}), "build a tower": ("preset", {"preset": "tower"}),
+        "build the skyline": ("preset", {"preset": "skyline"}),
+        "stack two cubes": ("build", {}), "a house with a red roof": ("build", {}),
+        "two cubes with a roof on top": ("build", {}),
+        "hand me the red cube": ("hand_me", {"type": "cube", "color": "red"}),
+        "bring me a blue cylinder": ("hand_me", {"type": "cyl_short", "color": "blue"}),
+        "can I have the tall cylinder": ("hand_me", {"type": "cyl_tall"}),
+        "give me the long bar": ("hand_me", {"type": "bar"}),
+        "pass me a block": ("hand_me", {"type": None}),
+        "put it there": ("put_there", {}), "clean up the table": ("clear", {}),
+        "what are you doing": ("status", {}), "hello there": ("unknown", {}),
+    }
+    bad = []
+    for text, (want, fields) in cases.items():
+        got = intents.parse(text, cat)
+        if got["intent"] != want or any(got.get(k) != v for k, v in fields.items()):
+            bad.append(f"{text!r} -> {got['intent']}")
+    return _report(f"spoken commands ({len(cases)} phrasings)", not bad, "; ".join(bad))
+
+
 def run(cfg, quick=False):
     import os
     os.environ["SIDEKICK_NO_DB"] = "1"            # tests use the local catalog, not the network
     cfg = C.load(overrides={"use_sim": True})
     print("Sidekick self-test (no hardware)\n", flush=True)
     results = [test_calibration(cfg), test_markers(cfg), test_firmware(cfg), test_planner(cfg),
-               test_tiling_stock(cfg), test_classify(cfg), test_dictation(cfg), test_speech(cfg)]
+               test_tiling_stock(cfg), test_classify(cfg), test_dictation(cfg), test_speech(cfg),
+               test_hand_signs(cfg), test_intents(cfg)]
     if not quick:
         with tempfile.TemporaryDirectory() as d:
             ok, body = test_body(cfg, d)

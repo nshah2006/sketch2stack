@@ -157,8 +157,10 @@ PATHS = {
     "hand_model": "hand_landmarker.task",
     "babble": "babble/samples.jsonl",
     "babble_sim": "babble/samples_sim.jsonl",
+    "babble_twin": "babble/samples_twin.jsonl",
     "body": "models/body.pt",
     "body_sim": "models/body_sim.pt",
+    "body_twin": "models/body_twin.pt",
     "kinematic": "models/kinematic.json",
     "touch": "touch_points.jsonl",
     "sessions": "sessions",
@@ -177,13 +179,19 @@ def path(key, data_dir=None):
     return p
 
 
+def _arm_key(cfg):
+    if not cfg["use_sim"]:
+        return ""
+    return "_twin" if cfg.get("sim_backend") == "twin" else "_sim"
+
+
 def body_path(cfg, data_dir=None):
-    """The simulator and the real arm each get their own body model."""
-    return path("body_sim" if cfg["use_sim"] else "body", data_dir)
+    """The simulator, the MuJoCo twin (camera-measured) and the real arm each get their own body model."""
+    return path("body" + _arm_key(cfg), data_dir)
 
 
 def babble_path(cfg, data_dir=None):
-    return path("babble_sim" if cfg["use_sim"] else "babble", data_dir)
+    return path("babble" + _arm_key(cfg), data_dir)
 
 
 def _merge(defaults, loaded):

@@ -25,7 +25,8 @@ from pathlib import Path
 
 import cv2
 
-from . import planner, presets, speech, webapi
+from . import intents, planner, presets, speech, webapi
+from .fetch import Fetcher
 from .overlay import TopDown, render
 
 UI_DIR = Path(__file__).parent / "ui"
@@ -42,6 +43,7 @@ class App:
         self._lock = threading.Lock()
         self._gen_lock = threading.Lock()
         self.run_build = None          # the app's build for the current run_id (so any tab can show it)
+        self.fetch = Fetcher(cfg, catalog, builder)    # "hand me a cube": one-off moves outside a build
 
     # ---------------------------------------------------------------- info
     def info(self):
@@ -125,6 +127,9 @@ class App:
     # ---------------------------------------------------------------- running
     def build(self, data):
         design = self._design(data)
+        if self.fetch.busy():
+            return False, {"ok": False, "problems": [{"level": "error", "msg": "the arm is handing over a block; "
+                                                      "wait a moment"}], "run_id": None, "server_id": self.server_id}
         ok, probs, run_id = self.builder.start_build(design)
         if ok:
             # owner = who pressed Build (the app's signed-in user), so other people's tabs don't adopt it
@@ -148,7 +153,131 @@ class App:
         s.pop("plan", None)
         s["server_id"] = self.server_id
         s["busy"] = self.builder.busy()
+        s["fetching"] = self.fetch.busy()
         return s
+
+    def view(self):
+        """The MuJoCo twin's perspective view (JPEG bytes), or None."""
+        return getattr(self.world, "view_jpeg", None)
+
+    # ---------------------------------------------------------------- spoken commands
+    def command(self, data):
+        """Typed/spoken command -> {ok, intent, reply}. See intents.py for the phrases."""
+        text = str(data.get("text", ""))[:300]
+        it = intents.parse(text, self.catalog, use_llm=True)
+        kind = it["intent"]
+        out = {"ok": False, "intent": it}
+        b, f = self.builder, self.fetch
+        if kind in ("stop", "pause"):
+            ok = b.pause() if b.busy() else f.pause()
+            if not ok:
+                b.arm.stop()
+            reply = ("Stopped. Say 'go on' to continue or 'cancel' to end it." if ok
+                     else "Okay, holding still." if not b.paused else "Already paused. Say 'go on' to continue.")
+            return {**out, "ok": True, "reply": reply}
+        if kind == "cancel":
+            if b.busy():
+                b.stop_build()
+            elif not f.cancel():
+                b.arm.stop()
+                return {**out, "ok": True, "reply": "Nothing to cancel."}
+            return {**out, "ok": True, "reply": "Okay, stopping."}
+        if kind == "resume":
+            if b.resume():
+                return {**out, "ok": True, "reply": "Going on."}
+            if b.safety_stopped:
+                return {**out, "reply": "I'll go on once your hand is clear of the arm."}
+            return {**out, "reply": "I'm not paused." if (b.busy() or f.busy()) else "Nothing to continue."}
+        if kind == "status":
+            s = b.snapshot()
+            busy = b.busy() or f.busy()
+            reply = (f"{s.get('mode', 'idle')}: {s.get('action', '')}" if busy
+                     else "Idle. Ask me to build something or hand you a block.")
+            if busy and s.get("total"):
+                reply += f" (block {s.get('step', 0) + 1} of {s['total']})"
+            return {**out, "ok": True, "reply": reply}
+        if kind in ("preset", "build", "hand_me", "put_there", "clear") and (b.busy() or f.busy()):
+            return {**out, "reply": "I'm busy right now. Say 'cancel' first, or wait until I'm done."}
+        if kind == "preset":
+            pid = it["preset"]
+            build = next((x for x in self.preset_builds() if x.get("id") == f"preset-{pid}"), None)
+            if build is None:
+                return {**out, "reply": f"I don't know the {pid}."}
+            return self._start(out, build, f"Building the {presets.get(pid)['name'].lower()}")
+        if kind == "build":
+            d = self.dictate({"text": text})
+            if not d["builds"]:
+                return {**out, "reply": d["reply"] or "I couldn't make a build out of that."}
+            return self._start(out, d["builds"][0], d["reply"] or "Building that")
+        if kind == "hand_me":
+            return self._hand_me(out, it)
+        if kind == "put_there":
+            return self._put_there(out, it)
+        if kind == "clear":
+            return {**out, "reply": "I can't clear the table on my own yet. Please move the blocks back by hand."}
+        return {**out, "reply": "Sorry, I didn't get that. Try 'build the house', 'hand me a cube', "
+                                "'stop' or 'go on'."}
+
+    def _start(self, out, build, reply):
+        ok, body = self.build({"build": build})
+        if not ok:
+            why = "; ".join(p["msg"] for p in body["problems"] if p["level"] == "error") or "it can't be built"
+            return {**out, "reply": f"I can't build that: {why}.", "problems": body["problems"]}
+        n = len(build.get("blocks", []))
+        return {**out, "ok": True, "run_id": body["run_id"], "build": build,
+                "reply": f"{reply.rstrip('.')} ({n} block{'s' if n != 1 else ''})."}
+
+    def _name(self, tid, color=None):
+        nm = self.catalog.types[tid].get("name", tid).lower() if tid else "block"
+        return f"{color} {nm}" if (color and self.cfg["use_color"]) else nm
+
+    def _hand_me(self, out, it):
+        f = self.fetch
+        tid, color = it.get("type"), it.get("color")
+        spot = tuple(self.cfg["layout"]["pickup"])
+        pointed = f.pointed()
+        target = pointed or spot
+        blk = f.find(tid, color, avoid=[spot, target])
+        what = self._name(tid, color)
+        if blk is None:
+            return {**out, "reply": f"I don't see a loose {what} I can reach outside the build strip. "
+                                    "Put one on the table and ask again."}
+        free = f.free_spot(*target, blk["type"])
+        if free is None:
+            return {**out, "reply": ("I can't reach the spot you pointed at." if pointed
+                                     else "The hand-over spot is full. Take a block away first.")}
+        target = free
+        if not f.start(blk, target, f"handing over a {self._name(blk['type'], blk.get('color'))}"):
+            return {**out, "reply": "I'm busy right now."}
+        where = "where you pointed" if pointed else "on the hand-over spot"
+        more = " (one at a time)" if it.get("count", 1) > 1 else ""
+        return {**out, "ok": True, "block": {k: blk.get(k) for k in ("x", "y", "type", "color")},
+                "target": list(target), "reply": f"Here's a {what}{more}: I'll put it {where}."}
+
+    def _put_there(self, out, it):
+        f = self.fetch
+        target = f.pointed()
+        if target is None:
+            return {**out, "reply": "Point at the spot first, then say 'put it there'."}
+        blk = None
+        if f.last and not it.get("type"):
+            blk = f.block_at(f.last["x"], f.last["y"])
+            if blk is not None:
+                blk = dict(blk, type=f.last["type"], color=f.last.get("color"))
+        if blk is None:
+            px, py = self.cfg["layout"]["pickup"]
+            blk = f.block_at(px, py) if not it.get("type") else None
+            if blk is not None:
+                blk = dict(blk, type=f.guess_type(blk))
+        if blk is None:
+            blk = f.find(it.get("type"), it.get("color"), avoid=[target])
+        if blk is None:
+            return {**out, "reply": "Which block? I don't see one to move."}
+        if not f.target_ok(*target, blk["type"]):
+            return {**out, "reply": "I can't reach the spot you pointed at."}
+        if not f.start(blk, target, f"moving the {self._name(blk['type'], blk.get('color'))}"):
+            return {**out, "reply": "I'm busy right now."}
+        return {**out, "ok": True, "target": list(target), "reply": "Okay, putting it there."}
 
     def frame(self):
         with self._lock:
@@ -169,6 +298,17 @@ class App:
         self.world.clear_blocks()
         if design:
             self.world.fill_supply(presets.needed(design))
+        return {"ok": True}
+
+    def sim_add(self, data):
+        """Drop a loose block on the simulated table: {type, color?, x, y, yaw?}."""
+        if self.world is None:
+            return {"ok": False, "msg": "not in simulator mode"}
+        tid = data.get("type", "cube")
+        if tid not in self.catalog.types:
+            return {"ok": False, "msg": f"no block type {tid!r}"}
+        color = data.get("color") or next(iter(self.catalog.types[tid]["colors"]), "red")
+        self.world.add_block(tid, color, float(data["x"]), float(data["y"]), yaw=float(data.get("yaw", 0.0)))
         return {"ok": True}
 
     def sim_poke(self):
@@ -246,8 +386,13 @@ def make_handler(app):
                 return self._send(200, app.current_run())
             if path == "/api/frame.jpg":
                 return self._send(200, app.frame() or b"", "image/jpeg")
+            if path == "/api/view.jpg":
+                v = app.view()
+                return self._send(200, v, "image/jpeg") if v else self._send(404, {"error": "no 3D view"})
             if path.startswith("/api/"):
                 return self._send(404, {"error": "not found"})
+            if path in ("/twin", "/twin/"):
+                return self._send(200, (UI_DIR / "twin.html").read_bytes(), "text/html; charset=utf-8")
             if path in ("/classic", "/classic/"):
                 return self._send(200, (UI_DIR / "index.html").read_bytes(), "text/html; charset=utf-8")
             f = _static(path)
@@ -283,6 +428,8 @@ def make_handler(app):
                 return self._send(200, app.dictate(data))
             if path == "/api/revise":
                 return self._send(200, app.revise(data))
+            if path == "/api/command":
+                return self._send(200, app.command(data))
             if path == "/api/build":
                 ok, body = app.build(data)
                 return self._send(200 if ok else 409, body)
@@ -292,6 +439,7 @@ def make_handler(app):
                                             "run_id": b.run_id})
                 if path == "/api/stop":
                     b.stop_build()
+                    app.fetch.cancel()
                     ok = True
                 elif path == "/api/pause":
                     ok = b.pause()
@@ -305,6 +453,8 @@ def make_handler(app):
                 return self._send(200, app.sim_reset(data.get("design")))
             if path == "/api/sim/poke":
                 return self._send(200, app.sim_poke())
+            if path == "/api/sim/add":
+                return self._send(200, app.sim_add(data))
             return self._send(404, {"error": "not found"})
 
     return H

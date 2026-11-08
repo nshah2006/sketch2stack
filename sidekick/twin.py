@@ -408,7 +408,10 @@ class TwinWorld(World):
                 rec["state"].append(list(self.emu.cur))       # where the servos are (us)
                 rec["action"].append(list(self.emu.target))   # what was commanded (us)
                 rec["t"].append(t)
-        hand = None if self.person.hand is None else (np.array(self.person.hand, float), bool(self.person.open))
+        p = self.person
+        signing = p.state == "signing"
+        hand = None if p.hand is None else (np.array(p.hand, float), bool(p.open),
+                                            p.sign if signing else None, p.point_at if signing else None)
         return (t, rgb, hand)
 
     # ================================================================= demo recording
@@ -447,12 +450,13 @@ class TwinWorld(World):
             claw_px = tuple(markers[cid].mean(axis=0))
         hands = []
         if hand is not None:
-            (hx, hy), opened = hand
+            (hx, hy), opened, sign, point_at = hand
             hx, hy = hx + self.rng.normal(0, 0.3), hy + self.rng.normal(0, 0.3)
             ring = [(hx + 6 * math.cos(a), hy + 6 * math.sin(a)) for a in np.linspace(0, 2 * math.pi, 8, endpoint=False)]
             ring += [(hx - 4, -10.0), (hx + 4, -10.0)]          # the forearm, back to the human
             px = [calib.table_to_pixel(x, y, self.cfg["hand_height"]) for x, y in ring]
-            hands.append({"x": float(hx), "y": float(hy), "open": opened, "px": px})
+            hands.append(self._sign_fields({"x": float(hx), "y": float(hy), "open": opened, "px": px},
+                                           sign or "", point_at))
         dets = detect_blocks(frame, self.cfg, calib, markers, claw_px, [h["px"] for h in hands])
         return Observation(t=t, claw=claw, detections=dets, hands=hands, image=frame,
                            markers=markers, claw_px=claw_px)
