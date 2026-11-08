@@ -74,6 +74,7 @@ DEFAULTS = {
     "babble_samples": 800,
     "babble_step": 120,
     "babble_settle": 0.6,
+    "babble_range": 0,             # us around ready for J0-J3 while babbling (0 = full limits)
     "babble_min_height": 1.5,      # fingertip height; below this babbling pulls back
 
     # --- optional parts ---
