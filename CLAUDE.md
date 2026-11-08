@@ -12,6 +12,12 @@ The first prototype (teach-by-showing: hand demo -> replay) lives in `legacy/` a
 3. Build: `builder.py` finds a matching loose block in a supply zone (or asks the user for one), `motion.py` picks it, turns the wrist, places it; the camera checks it.
 4. Safety: every camera frame, a hand within 10 cm of the low claw stops the arm; it resumes 1 s after the area is clear.
 
+## Digital twin, fleet, training (GPU server)
+- `sidekick/twin.py`: MuJoCo twin. Same wiring as `sim.py`, but blocks are rigid bodies and the camera is a rendered overhead image run through the real `perception.py` (ArUco calibration, claw marker, outlines). Hand position still comes from the person model.
+- `python -m sidekick.fleet -n 12 --record --gl /mnt/Data/Tushaar/nvidia_userspace`: N twins (own flawed arm, own person, own babbled body), building presets in a loop. Live grid at http://127.0.0.1:8765, results in `sidekick_data/fleet/results.jsonl`, demos in `sidekick_data/fleet/episodes/`.
+- GPU server has a compute-only NVIDIA driver: GL/Vulkan libs live in `/mnt/Data/Tushaar/nvidia_userspace` (`source env.sh`). Isaac Lab 3.0 container: `/mnt/Data/Tushaar/containers/isaac-lab_3.0.0.sif`.
+- Training (LeRobot venv `/mnt/Data/Tushaar/lerobot_venv`): `scripts/twin_to_lerobot.py` (episodes -> LeRobot dataset), then `scripts/train_policy.sh act|smolvla|groot`.
+
 ## Layout
 - `firmware/sidekick_firmware/sidekick_firmware.ino`: Uno servo driver. Microseconds only; limits, smoothing, watchdog, E-stop. No calibration or kinematics here.
 - `sidekick/`: Python package, run as `python -m sidekick <command>` from the repo root.

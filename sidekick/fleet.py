@@ -43,23 +43,32 @@ def _write(path, data, binary=False):
 
 
 def _score(world, steps):
-    """Worst placement error (cm) of the built blocks against the plan."""
-    worst, used = 0.0, set()
+    """-> (worst placement error cm, per-step errors). Colorless mode: match on type only."""
+    worst, used, per = 0.0, set(), []
+    by_color = world.cfg["use_color"]
     for s in steps:
-        cands = [b for b in world.blocks if b.type == s["type"] and b.color == s["color"] and b.id not in used]
+        cands = [b for b in world.blocks if b.type == s["type"] and b.id not in used
+                 and (b.color == s["color"] or not by_color) and not b.held]
         if not cands:
-            return 99.0
+            per.append(None)
+            worst = 99.0
+            continue
         b = min(cands, key=lambda q: math.hypot(q.x - s["x"], q.y - s["y"]))
         used.add(b.id)
-        worst = max(worst, math.hypot(b.x - s["x"], b.y - s["y"]), abs(b.z - s["z"]))
-    return worst
+        e = max(math.hypot(b.x - s["x"], b.y - s["y"]), abs(b.z - s["z"]))
+        per.append(round(e, 2))
+        worst = max(worst, e)
+    return worst, per
 
 
 def worker(k, args, out):
     os.environ["MUJOCO_EGL_DEVICE_ID"] = str(k % max(1, args.gpus))
     os.environ["SIDEKICK_NO_DB"] = "1"
+    os.environ.setdefault("OMP_NUM_THREADS", "2")
+    import cv2
     import numpy as np
     import torch
+    cv2.setNumThreads(1)                      # many twins share the CPU: no thread pools each
     torch.set_num_threads(2)
     from . import body_model as bm
     from . import config as C
@@ -119,6 +128,8 @@ def worker(k, args, out):
         w.fill_supply(presets.needed(design)[:2])
         st.update(phase="build", episode=ep, preset=pid, safety_stops=0)
         b = Builder(cfg, cat, w, arm, body, feeder=w.person, log_dir=str(out / f"log_{k}"))
+        if args.record:
+            w.start_recording(hz=args.record_hz)
         started, probs, _ = b.start_build(design)
         was_safe = False
         while started and b.busy() and w.clock.time() - s_virtual0 < args.timeout:
@@ -137,11 +148,25 @@ def worker(k, args, out):
         steps = list(b.plan_steps)
         b.close()
         time.sleep(0.5)                      # let the last block settle
+        worst, per = _score(w, steps) if started else (None, [])
         r = {"k": k, "episode": ep, "preset": pid, "result": result, "seed": seed, "reach_rate": reach,
-             "worst_cm": round(_score(w, steps), 2) if started else None, "toppled": len(w.toppled),
+             "worst_cm": None if worst is None else round(worst, 2), "step_err_cm": per,
+             "blocks": [[bl.type, round(bl.x, 1), round(bl.y, 1), round(bl.z, 1)] for bl in w.blocks],
+             "plan": [[st_["type"], round(st_["x"], 1), round(st_["y"], 1), round(st_["z"], 1)] for st_ in steps],
+             "toppled": len(w.toppled),
              "contacts": w.contacts - c0, "safety_stops": st["safety_stops"],
              "virtual_s": round(w.clock.time() - s_virtual0, 1), "real_s": round(time.time() - t_real0, 1),
              "body_cm": st["body_cm"]}
+        rec = w.stop_recording() if args.record else None
+        if rec and rec["frames"]:
+            import numpy as np
+            ep_dir = out / "episodes"
+            ep_dir.mkdir(exist_ok=True)
+            name = f"twin{k:02d}_ep{ep:04d}_{pid}"
+            np.savez(ep_dir / f"{name}.npz", frames=np.array(rec["frames"], dtype=object),
+                     state=np.array(rec["state"], np.float32), action=np.array(rec["action"], np.float32),
+                     t=np.array(rec["t"], np.float64), meta=json.dumps({**r, "hz": rec["hz"], "task": f"build the {pid}"}))
+            r["episode_file"] = f"episodes/{name}.npz"
         with open(out / "results.jsonl", "a") as f:
             f.write(json.dumps(r) + "\n")
         st["results"] = (st["results"] + [{"preset": pid, "result": result, "worst_cm": r["worst_cm"],
@@ -217,6 +242,8 @@ def main(argv=None):
     ap.add_argument("--gpus", type=int, default=2)
     ap.add_argument("--seed", type=int, default=100)
     ap.add_argument("--fresh", action="store_true", help="re-babble even if samples exist")
+    ap.add_argument("--record", action="store_true", help="save every build as a demo episode (camera, state, action)")
+    ap.add_argument("--record-hz", type=float, default=10.0)
     ap.add_argument("--gl", default=os.environ.get("SIDEKICK_GL", ""),
                     help="folder with user-space NVIDIA GL libs (GPU rendering)")
     a = ap.parse_args(argv)

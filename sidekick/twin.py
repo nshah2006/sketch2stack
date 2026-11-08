@@ -83,6 +83,7 @@ class TwinWorld(World):
         self.calib = None
         self.toppled = set()                  # ids of blocks that are no longer upright
         self.frames_rendered = 0
+        self._rec = None                      # demo recording (fleet.py -> LeRobot dataset)
         # building the scene takes a moment: restart time so the world doesn't
         # start out seconds behind its clock (the arm would miss its handshake)
         self.clock = SimClock(self.clock.speed)
@@ -362,8 +363,28 @@ class TwinWorld(World):
                                    [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
                 self.view_jpeg = buf.tobytes()
+        rec = self._rec
+        if rec is not None and t >= rec["next"]:
+            rec["next"] = t + 1.0 / rec["hz"]
+            small = cv2.resize(rgb, rec["size"], interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", cv2.cvtColor(small, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
+            if ok:
+                rec["frames"].append(buf.tobytes())
+                rec["state"].append(list(self.emu.cur))       # where the servos are (us)
+                rec["action"].append(list(self.emu.target))   # what was commanded (us)
+                rec["t"].append(t)
         hand = None if self.person.hand is None else (np.array(self.person.hand, float), bool(self.person.open))
         return (t, rgb, hand)
+
+    # ================================================================= demo recording
+    def start_recording(self, hz=10, size=(320, 180)):
+        with self.lock:
+            self._rec = {"hz": hz, "size": size, "next": 0.0, "frames": [], "state": [], "action": [], "t": []}
+
+    def stop_recording(self):
+        with self.lock:
+            rec, self._rec = self._rec, None
+        return rec
 
     def top_lens(self):
         f = (CAM_H / 2) / math.tan(math.radians(self._fovy / 2))
