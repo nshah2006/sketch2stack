@@ -34,6 +34,7 @@ def main():
     ap.add_argument("--out", default="sidekick_data/lerobot/sidekick_twin")
     ap.add_argument("--repo-id", default="local/sidekick_twin")
     ap.add_argument("--all", action="store_true", help="include unfinished builds too")
+    ap.add_argument("--max-err", type=float, default=2.0, help="cm; drop builds placed worse than this")
     a = ap.parse_args()
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -42,7 +43,8 @@ def main():
     for f in files:
         z = np.load(f, allow_pickle=True)
         meta = json.loads(str(z["meta"]))
-        if a.all or meta.get("result") == "done":
+        good = meta.get("result") == "done" and (meta.get("worst_cm") or 99) <= a.max_err
+        if a.all or good:
             eps.append((f, z, meta))
     if not eps:
         raise SystemExit(f"no usable episodes in {a.src}/episodes")

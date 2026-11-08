@@ -78,13 +78,30 @@ def worker(k, args, out):
     from .catalog import Catalog
     from .twin import make_twin
 
+    parent = os.getppid()
+
+    def orphan_watch():                       # main process gone (killed): don't linger as an orphan
+        while os.getppid() == parent:
+            time.sleep(1)
+        os._exit(0)
+
+    threading.Thread(target=orphan_watch, daemon=True).start()
     out = Path(out)
     seed = args.seed + k
     reach = REACH_RATES[k % len(REACH_RATES)]
     cfg = C.load(overrides={"use_sim": True})
+    if args.pickup:
+        cfg["layout"]["pickup"] = [float(v) for v in args.pickup.split(",")]
     cat = Catalog.load()
     w = make_twin(cfg, cat, speed=args.babble_speed, seed=seed, reach_rate=0.0)
-    arm = make_arm(cfg, world=w).connect()
+    for attempt in range(5):                  # a busy machine can miss the first handshake
+        try:
+            arm = make_arm(cfg, world=w).connect()
+            break
+        except Exception:
+            if attempt == 4:
+                raise
+            time.sleep(2)
     arm.start()
     st = {"k": k, "seed": seed, "reach_rate": reach, "phase": "babble", "episode": 0, "preset": None,
           "mode": "", "step": 0, "total": 0, "action": "", "results": [], "safety_stops": 0, "gpu": k % max(1, args.gpus)}
@@ -92,13 +109,20 @@ def worker(k, args, out):
 
     def publish():
         while not stop_pub.is_set():
-            st["sim_s"] = round(w.clock.time(), 1)
-            st["toppled"] = len(w.toppled)
-            st["contacts"] = w.contacts
-            _write(out / f"{k}.json", json.dumps(st))
-            if w.view_jpeg:
-                _write(out / f"{k}.jpg", w.view_jpeg, binary=True)
+            try:
+                _publish_once()
+            except Exception:
+                pass
             time.sleep(0.4)
+
+    def _publish_once():
+        st["sim_s"] = round(w.clock.time(), 1)
+        st["lag_s"] = round(w.clock.time() - w._t, 2)      # world behind its clock: frames get dropped
+        st["toppled"] = len(w.toppled)
+        st["contacts"] = w.contacts
+        _write(out / f"{k}.json", json.dumps(st))
+        if w.view_jpeg:
+            _write(out / f"{k}.jpg", w.view_jpeg, binary=True)
 
     threading.Thread(target=publish, daemon=True).start()
 
@@ -244,6 +268,9 @@ def main(argv=None):
     ap.add_argument("--fresh", action="store_true", help="re-babble even if samples exist")
     ap.add_argument("--record", action="store_true", help="save every build as a demo episode (camera, state, action)")
     ap.add_argument("--record-hz", type=float, default=10.0)
+    ap.add_argument("--pickup", default="35,30",
+                    help="x,y of the pickup spot in cm ('' = config). The default left-back corner is at "
+                         "the edge of accurate reach for some flawed arms; the right side is solid for all")
     ap.add_argument("--gl", default=os.environ.get("SIDEKICK_GL", ""),
                     help="folder with user-space NVIDIA GL libs (GPU rendering)")
     a = ap.parse_args(argv)
@@ -254,6 +281,8 @@ def main(argv=None):
     (out / "results.jsonl").touch()
     serve(out, a.n, a.port)
     print(f"Fleet of {a.n} twins. Watch: http://127.0.0.1:{a.port}/   results: {out / 'results.jsonl'}", flush=True)
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     ctx = mp.get_context("spawn")
     procs = [ctx.Process(target=worker, args=(k, a, str(out)), daemon=True) for k in range(a.n)]
     for p in procs:
@@ -266,6 +295,8 @@ def main(argv=None):
     finally:
         for p in procs:
             p.terminate()
+        for p in procs:
+            p.join(timeout=5)
 
 
 if __name__ == "__main__":
