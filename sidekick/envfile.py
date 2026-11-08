@@ -43,16 +43,13 @@ PROVIDERS = {   # name -> (default base url, key var, model var, default model, 
 }
 
 
-def llm_config():
-    """(base url, key, model, provider name) for the chat LLM, or None if unconfigured.
-    LLM_PROVIDER picks the provider; it defaults to openai so an existing .env keeps working.
-    None means the caller falls back to the offline rule parser, same as a missing key."""
-    load_env()
-    if os.environ.get("SIDEKICK_NO_LLM"):       # selftest: keep it offline and repeatable
-        return None
-    name = os.environ.get("LLM_PROVIDER", "").strip().lower()
-    if name not in PROVIDERS:                   # unset or a typo: stay on the provider that worked before
-        name = "openai"
+# Nemotron is the brain; OpenAI is only here to catch a bad conference network.
+# Below both is the offline rule parser, which needs no key at all.
+DEFAULT_CHAIN = ("nvidia", "openai")
+
+
+def _provider(name):
+    """(base url, key, model, name) for one provider, or None if it has no key."""
     base_default, key_var, model_var, model_default, placeholder = PROVIDERS[name]
     k = os.environ.get(key_var, "").strip()
     if not k or placeholder in k:
@@ -60,6 +57,28 @@ def llm_config():
     base = (os.environ.get("LLM_BASE_URL", "").strip() or base_default).rstrip("/")
     model = os.environ.get(model_var, "").strip() or model_default
     return base, k, model, name
+
+
+def llm_chain():
+    """Providers to try in order, best first. Empty means no model at all, and
+    the caller falls back to the rule parser.
+
+    LLM_PROVIDER pins a single provider when you want to prove which one
+    answered; left alone, Nemotron is tried first and OpenAI only picks up if
+    Nemotron has no key or cannot be reached."""
+    load_env()
+    if os.environ.get("SIDEKICK_NO_LLM"):       # selftest: keep it offline and repeatable
+        return []
+    pinned = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    order = (pinned,) if pinned in PROVIDERS else DEFAULT_CHAIN
+    return [c for c in (_provider(nm) for nm in order) if c]
+
+
+def llm_config():
+    """The provider we would try first, or None. Kept for callers that only
+    want to know whether a model is configured at all."""
+    chain = llm_chain()
+    return chain[0] if chain else None
 
 
 def supabase():

@@ -229,16 +229,20 @@ def _chat(url, key, body, drop_json_mode=False):
 def _ask(prompt):
     """Default llm: whatever envfile.llm_config() points at. Returns None on any
     failure (no key, offline, bad JSON) so repair() falls back instead of raising."""
-    conf = envfile.llm_config()
-    if not conf:
+    chain = envfile.llm_chain()
+    if not chain:
         return None
-    base, key, model, provider = conf
-    body = {"model": model, "temperature": 0,
+    body = {"temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": "Reply with JSON only."},
                          {"role": "user", "content": prompt}]}
-    try:
-        return _chat(base + "/chat/completions", key, body, drop_json_mode=provider != "openai")
-    except Exception as e:
-        print(f"repair: {provider} fallback failed ({type(e).__name__})", flush=True)
-        return None
+    # Nemotron first, OpenAI only if it could not be reached, then the caller trims.
+    for base, key, model, provider in chain:
+        try:
+            out = _chat(base + "/chat/completions", key, {**body, "model": model},
+                        drop_json_mode=provider != "openai")
+            if out:
+                return out
+        except Exception as e:
+            print(f"repair: {provider} failed ({type(e).__name__})", flush=True)
+    return None
