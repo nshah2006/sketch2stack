@@ -12,12 +12,6 @@ PRESETS = [
          {"type": "cube", "color": "red", "x": 6.5, "depth": 0, "rot": 0, "z_hint": 0},
          {"type": "cube", "color": "red", "x": 6.5, "depth": 0, "rot": 0, "z_hint": 3},
      ]},
-    {"id": "pyramid", "name": "Pyramid", "desc": "Two cubes with a third across them.",
-     "blocks": [
-         {"type": "cube", "color": "red", "x": 5.0, "depth": 0, "rot": 0, "z_hint": 0},
-         {"type": "cube", "color": "red", "x": 8.0, "depth": 0, "rot": 0, "z_hint": 0},
-         {"type": "cube", "color": "red", "x": 6.5, "depth": 0, "rot": 0, "z_hint": 3},
-     ]},
     {"id": "house", "name": "House", "desc": "Two cubes with a roof on top.",
      "blocks": [
          {"type": "cube", "color": "red", "x": 5.0, "depth": 0, "rot": 0, "z_hint": 0},
