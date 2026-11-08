@@ -305,8 +305,21 @@ def cmd_calib_table(cfg, a):
         print("No lens calibration; using a rough default (run calib-lens for better accuracy).")
         calib.default_lens(*cam.size())
     try:
-        frames = [cam.read()[0] for _ in range(10)]
-        markers = detect_markers(frames[-1])
+        # many frames, median corners per marker: one blurry frame can't drop or skew a marker
+        seen = {}
+        for _ in range(30):
+            frame = cam.read()[0]
+            if frame is not None:
+                for mid, c in detect_markers(frame).items():
+                    seen.setdefault(mid, []).append(np.asarray(c, np.float64))
+        markers = {mid: np.median(cs, axis=0) for mid, cs in seen.items() if len(cs) >= 5}
+        want = sorted(int(k) for k in cfg["layout"]["markers"])
+        missing = [m for m in want if m not in markers]
+        if missing:
+            print(f"WARNING: marker(s) {missing} not seen well. Check they're uncovered, flat and not in glare.")
+        if a.height:
+            f = calib.lens_from_height(markers, cfg, cam.size(), a.height)
+            print(f"lens set from your measured height {a.height} cm (focal length {f:.0f} px)")
         res = calib.calibrate_table(markers, cfg)
         calib.save()
         print(f"table pose from markers {res['used']}: error {res['error_px']:.2f} px (good: under 1.5), "
@@ -620,6 +633,8 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--no-autofeed", dest="autofeed", action="store_false",
                     help="sim: don't have the simulated person bring blocks")
+    ap.add_argument("--height", type=float, default=None,
+                    help="calib-table: measured camera height in cm; sets the lens from it")
     ap.add_argument("--quick", action="store_true", help="selftest: skip the slow simulator build")
     a = ap.parse_args(argv)
     over = {}
