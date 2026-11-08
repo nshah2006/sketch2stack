@@ -66,7 +66,11 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
             have = sum(1 for _ in f)
     ready = list(cfg["ready"])
     ready[4], ready[5] = 1500, cfg["claw_open"]
-    lo, hi = cfg["joint_min"], cfg["joint_max"]
+    lo, hi = list(cfg["joint_min"]), list(cfg["joint_max"])
+    rng_us = cfg.get("babble_range", 0)
+    if rng_us:                                   # stay in a box around ready (real arm: keeps it off the table)
+        for j in range(4):
+            lo[j], hi[j] = max(lo[j], ready[j] - rng_us), min(hi[j], ready[j] + rng_us)
     clock = arm.clock
     arm.move(ready)
     cur = list(ready)
@@ -76,8 +80,11 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
             if stop is not None and stop.is_set():
                 break
             if last_z is not None and last_z < cfg["babble_min_height"]:
-                for j in (1, 2):                       # pull shoulder and elbow halfway home
-                    cur[j] = cur[j] + (cfg["home"][j] - cur[j]) / 2
+                if rng_us:                             # too low: straight back to ready
+                    cur = list(ready)
+                else:                                  # pull shoulder and elbow halfway home
+                    for j in (1, 2):
+                        cur[j] = cur[j] + (cfg["home"][j] - cur[j]) / 2
             else:
                 for j in range(4):
                     cur[j] = float(np.clip(cur[j] + rng.normal(0, cfg["babble_step"]), lo[j], hi[j]))
@@ -103,7 +110,7 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
             if cfg.in_work_area(m["x"], m["y"]) and m["down"] > 0.8:
                 in_area += 1
             if progress:
-                progress(have, n, in_area)
+                progress(have, n, in_area, m["z"])
     arm.move(ready)
     return have
 

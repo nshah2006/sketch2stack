@@ -100,7 +100,7 @@ def babble_and_train(cfg, st, n):
     out = C.babble_path(cfg)
     t0 = time.time()
 
-    def prog(have, total, in_area):
+    def prog(have, total, in_area, z=None):
         if have % 50 == 0 or have == total:
             print(f"  babble {have}/{total}  (claw pointing down in the work area: {in_area})"
                   f"  {time.time() - t0:.0f}s", flush=True)
@@ -449,8 +449,9 @@ def cmd_babble(cfg, a):
         out = C.babble_path(cfg)
         t0 = time.time()
         bm.babble(st.arm, st.source, cfg, n=a.n or cfg["babble_samples"], out_path=out,
-                  progress=lambda h, n, ia: print(f"  {h}/{n}  usable (claw down, in area): {ia}  "
-                                                  f"{time.time() - t0:.0f}s", flush=True))
+                  progress=lambda h, n, ia, z: print(f"  {h}/{n}  usable (claw down, in area): {ia}  "
+                                                     f"fingertip z {z:.1f} cm  {time.time() - t0:.0f}s",
+                                                     flush=True))
     except KeyboardInterrupt:
         print("stopped; run babble again to continue")
     finally:
