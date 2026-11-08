@@ -27,7 +27,7 @@ torch.set_num_threads(1)
 
 
 # ===================================================================== reading the claw
-def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0, forward=0.0, base=None):
+def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0, forward=0.0, base=None, bias=None, raw=False):
     """Average n claw readings from an observation source (sim world or real vision).
     Returns the fingertip {x, y, z, down} or None if the marker was not seen."""
     got = []
@@ -50,7 +50,9 @@ def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0, forward=0.0, ba
     if len(got) < max(2, n // 2):
         return None
     avg = {k: float(np.mean([g.get(k, 0.0) for g in got])) for k in ("x", "y", "z", "nx", "ny", "down")}
-    return claw_tip(avg, marker_to_fingertip, forward, base)
+    if raw:
+        return avg
+    return claw_tip(avg, marker_to_fingertip, forward, base, bias)
 
 
 # ===================================================================== babbling
@@ -106,7 +108,8 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
                     continue
                 stuck = 0
             m = read_claw(source, 5, marker_to_fingertip=cfg["marker_to_fingertip"],
-                          forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"])
+                          forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"],
+                          bias=cfg.get("claw_normal_bias"))
             if m is None:
                 unseen += 1
                 last_z = None

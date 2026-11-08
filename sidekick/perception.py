@@ -21,7 +21,25 @@ class Observation:
     claw_px: tuple = None
 
 
-def claw_tip(claw, marker_to_fingertip, forward=0.0, base=None):
+def unbias_normal(n, bias):
+    """Rotate a measured marker normal by the fixed rotation that takes `bias`
+    (the normal measured with the claw truly vertical) to straight up."""
+    if not bias:
+        return np.asarray(n, float)
+    b = np.asarray(bias, float)
+    b = b / np.linalg.norm(b)
+    z = np.array([0.0, 0.0, 1.0])
+    axis = np.cross(b, z)
+    s, c = np.linalg.norm(axis), float(np.dot(b, z))
+    if s < 1e-9:
+        return np.asarray(n, float)
+    axis = axis / s
+    K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    R = np.eye(3) + s * K + (1 - c) * (K @ K)
+    return R @ np.asarray(n, float)
+
+
+def claw_tip(claw, marker_to_fingertip, forward=0.0, base=None, bias=None):
     """Fingertip position from a claw-marker reading. The marker faces away from
     the fingers, so the tips sit marker_to_fingertip cm behind its face normal.
     forward: how far the marker sits out in front of the tips (cm), measured
@@ -29,7 +47,7 @@ def claw_tip(claw, marker_to_fingertip, forward=0.0, base=None):
     Works even when the claw isn't pointing straight down."""
     if claw is None:
         return None
-    nx, ny, nz = claw.get("nx", 0.0), claw.get("ny", 0.0), claw["down"]
+    nx, ny, nz = unbias_normal([claw.get("nx", 0.0), claw.get("ny", 0.0), claw["down"]], bias)
     k = marker_to_fingertip
     x, y, z = claw["x"] - k * nx, claw["y"] - k * ny, claw["z"] - k * nz
     if forward and base is not None:

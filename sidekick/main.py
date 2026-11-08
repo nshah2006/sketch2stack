@@ -613,14 +613,31 @@ def cmd_simtest(cfg, a):
 
 
 def cmd_claw(cfg, a):
-    """Print where the camera thinks the fingertips are, twice a second (no arm moves)."""
+    """Print where the camera thinks the fingertips are, twice a second (no arm moves).
+    `claw --zero`: with the claw pointing straight down and its tips touching the
+    paper, learn the marker's tilt bias and the marker-to-tip distance."""
+    import numpy as np
     from .body_model import read_claw
     st = Stack(cfg, need_arm=False, hands=False)
-    print("Fingertip from the claw marker (cm). Touch the tips to the paper: z should read about 0. Ctrl+C quits.")
     try:
+        if a.zero:
+            m = read_claw(st.source, 30, timeout=6.0, raw=True)
+            if m is None:
+                print("claw marker not seen; nothing saved")
+                return
+            n = np.array([m["nx"], m["ny"], m["down"]])
+            n = n / np.linalg.norm(n)
+            cfg["claw_normal_bias"] = [round(float(v), 4) for v in n]
+            cfg["marker_to_fingertip"] = round(float(m["z"]), 2)     # tips on the paper: z = 0
+            C.save(cfg)
+            print(f"saved: claw_normal_bias {cfg['claw_normal_bias']} (tilt it measured: "
+                  f"{np.degrees(np.arccos(min(1.0, n[2]))):.0f} deg), marker_to_fingertip {cfg['marker_to_fingertip']} cm")
+            return
+        print("Fingertip from the claw marker (cm). Touch the tips to the paper: z should read about 0. Ctrl+C quits.")
         while True:
             m = read_claw(st.source, 5, marker_to_fingertip=cfg["marker_to_fingertip"],
-                          forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"])
+                          forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"],
+                          bias=cfg.get("claw_normal_bias"))
             if m is None:
                 print("  claw marker not seen", flush=True)
             else:
@@ -656,6 +673,7 @@ def main(argv=None):
                     help="sim: don't have the simulated person bring blocks")
     ap.add_argument("--height", type=float, default=None,
                     help="calib-table: measured camera height in cm; sets the lens from it")
+    ap.add_argument("--zero", action="store_true", help="claw: learn the claw marker's tilt bias (tips on the paper)")
     ap.add_argument("--quick", action="store_true", help="selftest: skip the slow simulator build")
     a = ap.parse_args(argv)
     over = {}
