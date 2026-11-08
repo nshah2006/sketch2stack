@@ -74,7 +74,7 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
     clock = arm.clock
     arm.move(ready)
     cur = list(ready)
-    unseen, last_z, in_area = 0, None, 0
+    unseen, last_z, in_area, stuck = 0, None, 0, 0
     with open(out_path, "a") as f:
         while have < n:
             if stop is not None and stop.is_set():
@@ -91,6 +91,20 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
             cur[4], cur[5] = 1500, cfg["claw_open"]
             arm.move(cur)
             clock.sleep(cfg["babble_settle"])
+            actual = arm.read() if hasattr(arm, "read") else None   # bus servos report where they really are
+            if actual is not None and all(a is not None for a in actual[:4]):
+                off = max(abs(a - c) for a, c in zip(actual[:4], cur[:4]))
+                if off > 120:                          # blocked (touching something) or a servo shut off
+                    stuck += 1
+                    print(f"  joint didn't reach its target (off by {off:.0f} us), back to ready", flush=True)
+                    if stuck >= 3:
+                        raise RuntimeError("Servos keep missing their targets: the arm is blocked or a "
+                                           "servo shut off from overload. Power-cycle the arm and check "
+                                           "nothing is in its way.")
+                    arm.move(ready)
+                    cur, last_z = list(ready), None
+                    continue
+                stuck = 0
             m = read_claw(source, 5, marker_to_fingertip=cfg["marker_to_fingertip"],
                           forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"])
             if m is None:
