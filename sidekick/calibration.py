@@ -211,8 +211,17 @@ class Calibration:
                 used[mid] = markers[mid]
         if len(used) < 3:
             raise ValueError(f"Only {len(used)} table markers visible ({sorted(used)}); need at least 3.")
-        obj, img = np.vstack(obj), np.vstack(img)
-        ok, rvec, tvec = cv2.solvePnP(obj, img, self.K, self.dist, flags=cv2.SOLVEPNP_ITERATIVE)
+        # marker CENTERS only: a card taped a few degrees crooked moves its corners
+        # but not its center, so it can't skew the table pose
+        # (corners first to get an unambiguous pose, then refine on the centers)
+        ok, rvec, tvec = cv2.solvePnP(np.vstack(obj), np.vstack(img).astype(np.float64), self.K, self.dist,
+                                      flags=cv2.SOLVEPNP_ITERATIVE)
+        if not ok:
+            raise ValueError("solvePnP failed")
+        obj = np.array([o.mean(axis=0) for o in obj], np.float64)
+        img = np.array([np.asarray(i, np.float64).mean(axis=0) for i in img], np.float64)
+        ok, rvec, tvec = cv2.solvePnP(obj, img, self.K, self.dist, rvec, tvec, useExtrinsicGuess=True,
+                                      flags=cv2.SOLVEPNP_ITERATIVE)
         if not ok:
             raise ValueError("solvePnP failed")
         proj, _ = cv2.projectPoints(obj, rvec, tvec, self.K, self.dist)
@@ -226,6 +235,27 @@ class Calibration:
         self.marker_px = {k: v for k, v in used.items()}
         self.table_error = err
         return {"error_px": err, "camera": cam.tolist(), "height": float(cam[2]), "used": sorted(used)}
+
+    def lens_from_height(self, markers, cfg, size, height_cm):
+        """No usable chessboard calibration: build a simple lens (no distortion,
+        center principal point) whose focal length puts the camera at the
+        measured height above the board. Returns the focal length in px."""
+        w, h = size
+        self.dist = np.zeros(5)
+        lo, hi = 0.3 * w, 4.0 * w
+        for _ in range(60):                       # camera height grows with focal length
+            f = (lo + hi) / 2
+            self.K = np.array([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1]], np.float64)
+            try:
+                got = self.calibrate_table(markers, cfg)["height"]
+            except ValueError:
+                got = 0.0
+            if got < height_cm:
+                lo = f
+            else:
+                hi = f
+        self.image_size, self.lens_error = [int(w), int(h)], None
+        return f
 
     def camera_moved(self, markers, tol_px=3.0):
         """True if any saved table-marker corner moved more than tol_px."""

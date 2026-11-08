@@ -52,6 +52,7 @@ class Motion:
     def go_to(self, x, y, z, claw=None, roll=None, correct=True):
         """-> "ok" | "unreachable" | "abort" """
         claw = self.claw if claw is None else claw
+        correct = correct and self.cfg.get("camera_correct", True)
         roll = self.roll if roll is None else roll
         target = (x, y, z)
         aim = list(target)
@@ -71,7 +72,7 @@ class Motion:
                 self.log("claw marker not visible; accepting the move")
                 return "ok"
             ex, ey, ez = target[0] - m["x"], target[1] - m["y"], target[2] - m["z"]
-            if math.hypot(ex, ey) <= 0.6 and abs(ez) <= 1.0:
+            if math.hypot(ex, ey) <= 0.4 and abs(ez) <= 1.0:
                 return "ok"
             if attempt == 3:
                 self.log(f"still {math.hypot(ex, ey):.1f} cm off after 3 corrections; continuing")

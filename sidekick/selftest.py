@@ -366,6 +366,8 @@ def test_speech(cfg):
 
 
 def run(cfg, quick=False):
+    import os
+    os.environ["SIDEKICK_NO_DB"] = "1"            # tests use the local catalog, not the network
     cfg = C.load(overrides={"use_sim": True})
     print("Sidekick self-test (no hardware)\n", flush=True)
     results = [test_calibration(cfg), test_markers(cfg), test_firmware(cfg), test_planner(cfg),
@@ -383,6 +385,8 @@ def run(cfg, quick=False):
 def simtest(cfg, runs=3):
     """Phase 2S: randomization test and repeated preset builds with a person reaching in."""
     from . import presets
+    import os
+    os.environ["SIDEKICK_NO_DB"] = "1"
     cfg = C.load(overrides={"use_sim": True})
     print("Simulator test suite\n", flush=True)
     ok_all = True

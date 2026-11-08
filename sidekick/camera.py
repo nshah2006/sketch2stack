@@ -26,11 +26,20 @@ class Camera:
         self.t = 0.0
         self.count = 0
         self.fps = 0.0
-        self._served = -1
+        self._served = 0
         self._cond = threading.Condition()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        if not self._wait_first(8.0):
+            self.close()
+            raise RuntimeError(f"Camera {index} opened but sends no images. On Mac: allow Terminal "
+                               "(or VS Code) in System Settings > Privacy & Security > Camera, then quit "
+                               "and reopen it. Close Photo Booth/Zoom. Or try another camera_index.")
+
+    def _wait_first(self, timeout):
+        with self._cond:
+            return self._cond.wait_for(lambda: self.count > 0, timeout=timeout)
 
     @classmethod
     def from_config(cls, cfg):

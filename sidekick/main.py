@@ -12,6 +12,7 @@ $SIDEKICK_DATA), so any step can be redone on its own.
 """
 import argparse
 import json
+import math
 import sys
 import time
 
@@ -81,6 +82,9 @@ class Stack:
 
 def load_body(cfg, stack=None):
     from .body_model import BodyModel
+    if not cfg["use_sim"] and C.path("kinematic").exists():
+        from .kinematics import KinematicBody
+        return KinematicBody.load(cfg)
     p = C.body_path(cfg)
     if p.exists():
         return BodyModel.load(p)
@@ -100,7 +104,7 @@ def babble_and_train(cfg, st, n):
     out = C.babble_path(cfg)
     t0 = time.time()
 
-    def prog(have, total, in_area):
+    def prog(have, total, in_area, z=None):
         if have % 50 == 0 or have == total:
             print(f"  babble {have}/{total}  (claw pointing down in the work area: {in_area})"
                   f"  {time.time() - t0:.0f}s", flush=True)
@@ -305,8 +309,21 @@ def cmd_calib_table(cfg, a):
         print("No lens calibration; using a rough default (run calib-lens for better accuracy).")
         calib.default_lens(*cam.size())
     try:
-        frames = [cam.read()[0] for _ in range(10)]
-        markers = detect_markers(frames[-1])
+        # many frames, median corners per marker: one blurry frame can't drop or skew a marker
+        seen = {}
+        for _ in range(30):
+            frame = cam.read()[0]
+            if frame is not None:
+                for mid, c in detect_markers(frame).items():
+                    seen.setdefault(mid, []).append(np.asarray(c, np.float64))
+        markers = {mid: np.median(cs, axis=0) for mid, cs in seen.items() if len(cs) >= 5}
+        want = sorted(int(k) for k in cfg["layout"]["markers"])
+        missing = [m for m in want if m not in markers]
+        if missing:
+            print(f"WARNING: marker(s) {missing} not seen well. Check they're uncovered, flat and not in glare.")
+        if a.height:
+            f = calib.lens_from_height(markers, cfg, cam.size(), a.height)
+            print(f"lens set from your measured height {a.height} cm (focal length {f:.0f} px)")
         res = calib.calibrate_table(markers, cfg)
         calib.save()
         print(f"table pose from markers {res['used']}: error {res['error_px']:.2f} px (good: under 1.5), "
@@ -436,8 +453,9 @@ def cmd_babble(cfg, a):
         out = C.babble_path(cfg)
         t0 = time.time()
         bm.babble(st.arm, st.source, cfg, n=a.n or cfg["babble_samples"], out_path=out,
-                  progress=lambda h, n, ia: print(f"  {h}/{n}  usable (claw down, in area): {ia}  "
-                                                  f"{time.time() - t0:.0f}s", flush=True))
+                  progress=lambda h, n, ia, z: print(f"  {h}/{n}  usable (claw down, in area): {ia}  "
+                                                     f"fingertip z {z:.1f} cm  {time.time() - t0:.0f}s",
+                                                     flush=True))
     except KeyboardInterrupt:
         print("stopped; run babble again to continue")
     finally:
@@ -454,43 +472,123 @@ def cmd_train_body(cfg, a):
 
 
 def cmd_reach(cfg, a):
-    from .body_model import BodyModel
-    body = BodyModel.load(C.body_path(cfg))
+    """Map of where the arm can grip a 3 cm block (on the table and 2 blocks up).
+    --apply moves the build strip, supply zones and pickup spot onto the reachable area."""
+    body = load_body(cfg)
     lay = cfg["layout"]
-    print("Reachable fingertip positions (# = yes) at the grasp height of a 3 cm block on the table,\n"
-          "and 4 cm higher. Columns x = 0..50, rows y from back (top) to front. B = build strip, S = supply.")
-    for z in (cfg.grasp_z(0, 3.0), cfg.grasp_z(0, 3.0) + 4):
-        print(f"\nfingertip z = {z:.1f} cm")
-        for y in range(int(lay["work_area"][1]), -1, -2):
-            row = ""
-            for x in range(0, int(lay["work_area"][0]) + 1, 2):
-                ok = body.solve([x, y, z], steps=80)["reachable"]
-                ch = "#" if ok else "."
-                if cfg.in_build(x, y):
-                    ch = "B" if ok else "b"
-                elif cfg.in_supply(x, y):
-                    ch = "S" if ok else "s"
-                row += ch
-            print(f"{y:3d} {row}", flush=True)
-    print("\nLowercase b/s = a build or supply spot the arm can't reach. Move layout.build_area / "
-          "layout.supply in config.json onto the # area.")
+    W, H = lay["work_area"]
+    zs = (cfg.grasp_z(0, 3.0), cfg.grasp_z(6.0, 3.0))
+    ok, tilt = {}, {}
+    for y in range(int(H), -1, -1):
+        for x in range(0, int(W) + 1):
+            sols = [body.solve([x, y, z], steps=80) for z in zs]
+            ok[x, y] = all(s["reachable"] for s in sols)
+            tilt[x, y] = max(math.degrees(math.acos(min(1.0, max(-1.0, s["down"])))) for s in sols)
+    if a.apply:
+        _apply_layout(cfg, ok, tilt, W, H)
+    print(f"Where the arm can grip a 3 cm block on the table AND 2 blocks up (# = yes), x 0..{W:g} "
+          "left to right, y from the back (top) to the front. B = build strip, S = supply, P = pickup.")
+    px, py = lay.get("pickup", [-99, -99])
+    for y in range(int(H), -1, -1):
+        row = ""
+        for x in range(0, int(W) + 1):
+            c = "#" if ok[x, y] else "."
+            if abs(x - px) < 1 and abs(y - py) < 1:
+                c = "P" if ok[x, y] else "p"
+            elif cfg.in_build(x, y):
+                c = "B" if ok[x, y] else "b"
+            elif cfg.in_supply(x, y):
+                c = "S" if ok[x, y] else "s"
+            row += c
+        print(f"{y:3d} {row}")
+    print("Lowercase b/s/p = a build, supply or pickup spot the arm can't reach. "
+          "`python -m sidekick reach --apply` moves them onto the # area.")
+
+
+def _apply_layout(cfg, ok, tilt, W, H):
+    """Build strip (as wide as possible, claw as upright as possible) plus a 4x4 cm
+    supply zone on each side, all on reachable spots."""
+    lay = cfg["layout"]
+
+    def cost(x0, x1, y0, y1):          # worst claw tilt over the rectangle, None if unreachable
+        cells = [(x, y) for x in range(int(x0), int(x1) + 1) for y in range(int(y0), int(y1) + 1)]
+        if not all(ok.get(c, False) for c in cells):
+            return None
+        return max(tilt[c] for c in cells)
+
+    bx, by = lay["base"]
+    best = None
+    for limit in (40, 45, 90):              # widest strip with the claw tipped at most `limit` deg,
+        for w in (16, 14, 12, 10, 8):       # right in front of the base
+            for y0 in range(0, int(H) - 2):
+                for x0 in range(0, int(W) - w + 1):
+                    c = cost(x0, x0 + w, y0, y0 + 3)
+                    if c is not None and c <= limit:
+                        # centred in front of the base, ~12 cm out (where the touch points were)
+                        score = (abs(x0 + w / 2 - bx) + abs(by - (y0 + 1.5) - 12), c)
+                        if best is None or score < best[2]:
+                            best = (c, [x0, x0 + w, y0, y0 + 3], score)
+            if best:
+                break
+        if best:
+            break
+    if best is None:
+        print("  no reachable spot for a build strip; check the touch fit / joint limits")
+        return
+    b = best[1]
+    lay["build_area"] = [float(v) for v in b]
+    sides = {}
+    for name in ("left", "right"):
+        cand = None
+        for y in range(2, int(H) - 1):
+            for x in range(2, int(W) - 1):
+                if (name == "left" and x + 2 > b[0] - 3) or (name == "right" and x - 2 < b[1] + 3):
+                    continue
+                c = cost(x - 2, x + 2, y - 2, y + 2)
+                if c is not None and (cand is None or c < cand[0]):
+                    cand = (c, [float(x - 2), float(x + 2), float(y - 2), float(y + 2)])
+        if cand:
+            sides[name] = cand[1]
+    if sides:
+        lay["supply"] = sides
+        z = sides.get("left") or sides["right"]
+        lay["pickup"] = [(z[0] + z[1]) / 2, (z[2] + z[3]) / 2]
+    C.save(cfg)
+    print(f"  build strip -> {lay['build_area']} (claw tilt up to {best[0]:.0f} deg), "
+          f"supply -> {lay['supply']}, pickup -> {lay['pickup']} (saved)\n")
 
 
 def cmd_goto_test(cfg, a):
+    """Send the tips to 9 spots just above the paper (claw down) and measure where they
+    went with the camera. Real arm: uses the marker's pixel, like `touch`."""
     from .builder import Builder
     st = Stack(cfg, need_arm=True, need_body=True, speed=a.speed)
     b = Builder(cfg, st.catalog, st.source, st.arm, st.body)
+    real = not cfg["use_sim"]
     try:
         x0, x1, y0, y1 = cfg["layout"]["build_area"]
-        z = cfg.grasp_z(0, 3.0) + 2
+        z = 1.0 if real else cfg.grasp_z(0, 3.0) + 2
+        base = (st.body.p["bx"], st.body.p["by"]) if hasattr(st.body, "p") else None
         errs = []
-        for x in np.linspace(x0 + 1, x1 - 1, 3):
+        for x in np.linspace(x0, x1, 3):
             for y in np.linspace(y0, y1, 3):
+                b.motion.go_to(x, y, z + 3, correct=False)            # come in from above
                 r = b.motion.go_to(x, y, z, correct=True)
-                m = b.read_claw()
+                if real:
+                    time.sleep(0.4)
+                    tilt = 0.0
+                    if hasattr(st.body, "angles"):
+                        tilt = 180.0 - float(st.body.angles(st.arm.targets[:4])[3][0])
+                    m = _touch_tip(st.source, cfg, h=z, base=base, tilt=tilt)
+                    m = m and dict(m, z=z, tilt=tilt)
+                else:
+                    m = b.read_claw()
                 e = None if m is None else float(np.linalg.norm([m["x"] - x, m["y"] - y, m["z"] - z]))
                 errs.append(e)
-                print(f"  ({x:.1f}, {y:.1f}, {z:.1f}) {r}  error {'unseen' if e is None else f'{e * 10:.1f} mm'}")
+                print(f"  ({x:.1f}, {y:.1f}) {r}  error {'unseen' if e is None else f'{e * 10:.1f} mm'}"
+                      + ("" if m is None else f"  (went to {m['x']:.1f}, {m['y']:.1f}"
+                         + (f", claw tipped {m['tilt']:.0f} deg)" if "tilt" in m else ")")))
+                b.motion.go_to(x, y, z + 3, correct=False)
         good = [e for e in errs if e is not None]
         if good:
             print(f"mean {np.mean(good) * 10:.1f} mm, worst {np.max(good) * 10:.1f} mm (target under 5 mm)")
@@ -672,10 +770,204 @@ def cmd_simtest(cfg, a):
     sys.exit(0 if simtest(cfg, runs=a.n or 3) else 1)
 
 
+from .perception import arm_heading   # noqa: E402
+
+
+def cmd_claw(cfg, a):
+    """Print where the camera thinks the fingertips are, twice a second (no arm moves).
+    `claw --zero`: with the claw pointing straight down and its tips touching the
+    paper, learn the marker's tilt bias and the marker-to-tip distance."""
+    import numpy as np
+    from .body_model import read_claw
+    st = Stack(cfg, need_arm=False, hands=False)
+    try:
+        if a.zero:
+            m = read_claw(st.source, 30, timeout=6.0, raw=True)
+            if m is None:
+                print("claw marker not seen; nothing saved")
+                return
+            n = np.array([m["nx"], m["ny"], m["down"]])
+            n = n / np.linalg.norm(n)
+            cfg["claw_normal_bias"] = [round(float(v), 4) for v in n]
+            cfg["claw_normal_bias"].append(round(arm_heading(m["x"], m["y"], cfg["layout"]["base"]), 2))
+            cfg["marker_to_fingertip"] = round(float(m["z"]), 2)     # tips on the paper: z = 0
+            C.save(cfg)
+            print(f"saved: claw_normal_bias {cfg['claw_normal_bias']} (tilt it measured: "
+                  f"{np.degrees(np.arccos(min(1.0, n[2]))):.0f} deg), marker_to_fingertip {cfg['marker_to_fingertip']} cm")
+            return
+        print("Fingertip from the claw marker (cm). Touch the tips to the paper: z should read about 0. Ctrl+C quits.")
+        while True:
+            m = read_claw(st.source, 5, marker_to_fingertip=cfg["marker_to_fingertip"],
+                          forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"],
+                          bias=cfg.get("claw_normal_bias"))
+            if m is None:
+                print("  claw marker not seen", flush=True)
+            else:
+                print(f"  x {m['x']:6.1f}  y {m['y']:6.1f}  z {m['z']:5.1f}   down {m['down']:.2f}", flush=True)
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        st.close()
+
+
+def _lengths(cfg):
+    L = cfg.get("arm_lengths")
+    if not L or len(L) != 4:
+        sys.exit("Set arm_lengths [A, B, C, D] (cm) in sidekick_data/config.json first: table to shoulder "
+                 "pivot, shoulder to elbow, elbow to wrist, wrist to the closed claw tips.")
+    return [float(v) for v in L]
+
+
+def cmd_touch(cfg, a):
+    """Collect touch points for the kinematic model: jog the claw straight down until
+    the tips touch the paper, then `save`. Spread 6-10 points over the area."""
+    import json as _json
+    from .body_model import read_claw
+    _lengths(cfg)
+    st = Stack(cfg, need_arm=True, hands=False)
+    arm = st.arm
+    out = C.path("touch")
+    print(__doc_touch__)
+    try:
+        while True:
+            n = len(open(out).readlines()) if out.exists() else 0
+            print(f"[{n} points]  now:", " ".join(f"J{i}={p}" for i, p in enumerate(arm.targets)))
+            parts = input("> ").strip().split()
+            if not parts:
+                continue
+            c = parts[0].lower()
+            try:
+                if c in ("q", "quit"):
+                    break
+                elif c.isdigit() and len(parts) == 2:
+                    j, v = int(c), parts[1]
+                    val = arm.targets[j] + int(v) if v[0] in "+-" else int(v)
+                    t = list(arm.targets)
+                    t[j] = max(cfg["hard_min"], min(cfg["hard_max"], val))
+                    arm._send("J " + " ".join(str(x) for x in t))
+                    arm.targets = t
+                elif c == "save":
+                    h = float(parts[1]) if len(parts) > 1 else 0.0     # `save 2.5` = tips on a 2.5 cm block
+                    m = _touch_tip(st.source, cfg, h)
+                    if m is None:
+                        print("  claw marker not seen; not saved (keep hands out of view)")
+                        continue
+                    pulses = arm.read_stable() if hasattr(arm, "read_stable") else None
+                    pulses = pulses[:4] if pulses else None
+                    if pulses is None:
+                        pulses = list(arm.targets[:4])
+                    with open(out, "a") as f:
+                        f.write(_json.dumps(dict(m, p=pulses, h=h)) + "\n")
+                    print(f"  saved point at x {m['x']:.1f}  y {m['y']:.1f}  (tips at height {h:g} cm)")
+                elif c == "zero":
+                    raw = read_claw(st.source, 30, timeout=6.0, raw=True)
+                    if raw is None:
+                        print("  claw marker not seen; nothing changed")
+                        continue
+                    nv = np.array([raw["nx"], raw["ny"], raw["down"]])
+                    nv = nv / np.linalg.norm(nv)
+                    cfg["claw_normal_bias"] = [round(float(v), 4) for v in nv]
+                    cfg["claw_normal_bias"].append(round(arm_heading(raw["x"], raw["y"], cfg["layout"]["base"]), 2))
+                    cfg["marker_to_fingertip"] = round(float(raw["z"]), 2)
+                    C.save(cfg)
+                    print(f"  zeroed: marker tilt bias {np.degrees(np.arccos(min(1.0, nv[2]))):.0f} deg, "
+                          f"marker_to_fingertip {cfg['marker_to_fingertip']} cm. Now `save` this point.")
+                elif c == "undo":
+                    if out.exists():
+                        lines = open(out).readlines()[:-1]
+                        open(out, "w").writelines(lines)
+                        print("  removed the last point")
+                elif c == "clear":
+                    out.unlink(missing_ok=True)
+                    print("  all points removed")
+                elif c == "fit":
+                    _fit_arm(cfg)
+                else:
+                    print(__doc_touch__)
+            except (ValueError, IndexError):
+                print("  bad command")
+    finally:
+        st.close()
+
+
+def _tip_from_px(calib, cfg, u, v, h, base, tilt=0.0):
+    from .perception import tip_from_pixel
+    return tip_from_pixel(calib, cfg, u, v, h, base, tilt)
+
+
+def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0, base=None, tilt=0.0):
+    """Fingertip x, y for a touch point. With the claw pointing straight down the
+    marker centre sits marker_to_fingertip above the tips, so its pixel ray is cut
+    at that height (no marker-tilt estimate involved, which is good to ~1 cm only),
+    then marker_forward is taken off toward the base."""
+    px, t_end = [], time.monotonic() + timeout
+    while len(px) < n and time.monotonic() < t_end:
+        obs = source.read(timeout=0.5)
+        if obs is not None and obs.claw_px is not None:
+            px.append(obs.claw_px)
+    calib = getattr(source, "calib", None)
+    if len(px) < max(2, n // 2) or calib is None:
+        return None
+    u, v = np.median(np.array(px, float), axis=0)
+    hit = _tip_from_px(calib, cfg, u, v, h, base or cfg["layout"]["base"], tilt)
+    if hit is None:
+        return None
+    return {"x": hit[0], "y": hit[1], "px": [float(u), float(v)]}
+
+
+def _fit_arm(cfg):
+    from .kinematics import default_params, fit, load_points
+    pts = load_points()
+    if len(pts) < 4:
+        print(f"  need at least 4 touch points (have {len(pts)})")
+        return None
+    params = default_params(cfg, _lengths(cfg))
+    calib = None
+    if any("px" in q for q in pts):
+        from .calibration import Calibration
+        calib = Calibration.load()
+    for _ in range(3 if calib else 1):
+        if calib:      # the marker offset points away from the base: redo the tips with the fitted base
+            for q in pts:
+                if "px" in q:
+                    hit = _tip_from_px(calib, cfg, q["px"][0], q["px"][1], q.get("h", 0.0),
+                                       (params["bx"], params["by"]))
+                    if hit:
+                        q["x"], q["y"] = hit
+        body, rms, worst, each = fit(params, pts, cfg["joint_min"], cfg["joint_max"])
+        params = dict(params, bx=body.p["bx"], by=body.p["by"])
+    body.save()
+    p = body.p
+    cfg["layout"]["base"] = [round(p["bx"], 1), round(p["by"], 1)]
+    C.save(cfg)
+    for i, (q, d) in enumerate(zip(pts, each)):
+        flag = "   <-- off, check this one" if d > max(0.8, 2.5 * rms) else ""
+        print(f"    point {i + 1}: J {' '.join(str(v) for v in q['p'])}  error {d * 10:.0f} mm{flag}")
+    print(f"  fitted {len(pts)} points: average error {rms * 10:.1f} mm, worst {worst * 10:.1f} mm "
+          f"(good: under 5 mm). Saved {C.path('kinematic')}")
+    print(f"  offsets J0..J3 = {p['o0']:.0f} {p['o1']:.0f} {p['o2']:.0f} {p['o3']:.0f}, shoulder height "
+          f"{p['A']:.1f} cm, base at ({p['bx']:.1f}, {p['by']:.1f}), turntable direction {p['s0']:+.0f}, "
+          f"{p['k']:.2f} us/deg")
+    return body
+
+
+def cmd_fit_arm(cfg, a):
+    _fit_arm(cfg)
+
+
+__doc_touch__ = """Touch points: jog the claw STRAIGHT DOWN until the tips just touch the paper, then type save.
+  <joint> <us> / <joint> +<us>   move (same as jog)      save    store this point
+  save 2.5   store a point with the tips resting on top of something 2.5 cm tall
+  zero   (first point only) claw straight down, tips touching: re-zero the camera's claw reading
+  undo   remove the last point     clear   remove all     fit   fit the arm model     q   quit
+Do 6-10 points spread over where the arm will build: left, right, near, far."""
+
+
 COMMANDS = {
     "setup": cmd_setup, "markers": cmd_markers, "check": cmd_check, "jog": cmd_jog,
     "calib-lens": cmd_calib_lens, "calib-table": cmd_calib_table, "tune-colors": cmd_tune_colors,
-    "view": cmd_view, "babble": cmd_babble, "train-body": cmd_train_body, "reach": cmd_reach,
+    "view": cmd_view, "claw": cmd_claw, "touch": cmd_touch, "fit-arm": cmd_fit_arm, "babble": cmd_babble, "train-body": cmd_train_body, "reach": cmd_reach,
     "goto-test": cmd_goto_test, "pick-test": cmd_pick_test, "presets": cmd_presets, "build": cmd_build,
     "ui": cmd_ui, "selftest": cmd_selftest, "simtest": cmd_simtest, "db-check": cmd_db_check,
     "llm-check": cmd_llm_check,
@@ -695,6 +987,10 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--no-autofeed", dest="autofeed", action="store_false",
                     help="sim: don't have the simulated person bring blocks")
+    ap.add_argument("--height", type=float, default=None,
+                    help="calib-table: measured camera height in cm; sets the lens from it")
+    ap.add_argument("--zero", action="store_true", help="claw: learn the claw marker's tilt bias (tips on the paper)")
+    ap.add_argument("--apply", action="store_true", help="reach: move the build/supply zones onto the reachable area")
     ap.add_argument("--quick", action="store_true", help="selftest: skip the slow simulator build")
     a = ap.parse_args(argv)
     over = {}

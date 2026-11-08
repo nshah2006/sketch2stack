@@ -27,7 +27,7 @@ torch.set_num_threads(1)
 
 
 # ===================================================================== reading the claw
-def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0):
+def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0, forward=0.0, base=None, bias=None, raw=False):
     """Average n claw readings from an observation source (sim world or real vision).
     Returns the fingertip {x, y, z, down} or None if the marker was not seen."""
     got = []
@@ -50,7 +50,9 @@ def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0):
     if len(got) < max(2, n // 2):
         return None
     avg = {k: float(np.mean([g.get(k, 0.0) for g in got])) for k in ("x", "y", "z", "nx", "ny", "down")}
-    return claw_tip(avg, marker_to_fingertip)
+    if raw:
+        return avg
+    return claw_tip(avg, marker_to_fingertip, forward, base, bias)
 
 
 # ===================================================================== babbling
@@ -66,25 +68,48 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
             have = sum(1 for _ in f)
     ready = list(cfg["ready"])
     ready[4], ready[5] = 1500, cfg["claw_open"]
-    lo, hi = cfg["joint_min"], cfg["joint_max"]
+    lo, hi = list(cfg["joint_min"]), list(cfg["joint_max"])
+    rng_us = cfg.get("babble_range", 0)
+    if rng_us:                                   # stay in a box around ready (real arm: keeps it off the table)
+        for j in range(4):
+            lo[j], hi[j] = max(lo[j], ready[j] - rng_us), min(hi[j], ready[j] + rng_us)
     clock = arm.clock
     arm.move(ready)
     cur = list(ready)
-    unseen, last_z, in_area = 0, None, 0
+    unseen, last_z, in_area, stuck = 0, None, 0, 0
     with open(out_path, "a") as f:
         while have < n:
             if stop is not None and stop.is_set():
                 break
             if last_z is not None and last_z < cfg["babble_min_height"]:
-                for j in (1, 2):                       # pull shoulder and elbow halfway home
-                    cur[j] = cur[j] + (cfg["home"][j] - cur[j]) / 2
+                if rng_us:                             # too low: straight back to ready
+                    cur = list(ready)
+                else:                                  # pull shoulder and elbow halfway home
+                    for j in (1, 2):
+                        cur[j] = cur[j] + (cfg["home"][j] - cur[j]) / 2
             else:
                 for j in range(4):
                     cur[j] = float(np.clip(cur[j] + rng.normal(0, cfg["babble_step"]), lo[j], hi[j]))
             cur[4], cur[5] = 1500, cfg["claw_open"]
             arm.move(cur)
             clock.sleep(cfg["babble_settle"])
-            m = read_claw(source, 5, marker_to_fingertip=cfg["marker_to_fingertip"])
+            actual = arm.read_stable() if hasattr(arm, "read_stable") else None   # bus servos report where they really are
+            if actual is not None and all(a is not None for a in actual[:4]):
+                off = max(abs(a - c) for a, c in zip(actual[:4], cur[:4]))
+                if off > 120:                          # blocked (touching something) or a servo shut off
+                    stuck += 1
+                    print(f"  joint didn't reach its target (off by {off:.0f} us), back to ready", flush=True)
+                    if stuck >= 3:
+                        raise RuntimeError("Servos keep missing their targets: the arm is blocked or a "
+                                           "servo shut off from overload. Power-cycle the arm and check "
+                                           "nothing is in its way.")
+                    arm.move(ready)
+                    cur, last_z = list(ready), None
+                    continue
+                stuck = 0
+            m = read_claw(source, 5, marker_to_fingertip=cfg["marker_to_fingertip"],
+                          forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"],
+                          bias=cfg.get("claw_normal_bias"))
             if m is None:
                 unseen += 1
                 last_z = None
@@ -94,6 +119,8 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
                 continue
             unseen = 0
             last_z = m["z"]
+            if rng_us and m["down"] < 0.6:            # claw tipping over: treat like too low, go back to ready
+                last_z = -1.0
             line = {"p": [int(round(c)) for c in cur[:4]], "x": m["x"], "y": m["y"], "z": m["z"],
                     "down": m["down"], "t": clock.time()}
             f.write(json.dumps(line) + "\n")
@@ -102,7 +129,7 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
             if cfg.in_work_area(m["x"], m["y"]) and m["down"] > 0.8:
                 in_area += 1
             if progress:
-                progress(have, n, in_area)
+                progress(have, n, in_area, m["z"])
     arm.move(ready)
     return have
 

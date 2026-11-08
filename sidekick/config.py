@@ -26,6 +26,9 @@ DEFAULTS = {
     "sim_seed": None,              # None = new random arm errors each start
 
     # --- hardware ---
+    "arm_type": "uno",             # "uno" (our firmware) or "xarm" (Hiwonder xArm 1S over USB)
+    # xArm servo id for our joints 0-5 (base, shoulder, elbow, wrist pitch, wrist roll, gripper)
+    "xarm_ids": [6, 5, 4, 3, 2, 1],
     "serial_port": "auto",
     "baud": 115200,
     "camera_index": 0,
@@ -55,6 +58,9 @@ DEFAULTS = {
     "table_marker_size": 5.0,
     "claw_marker_size": 3.0,
     "marker_to_fingertip": 9.0,
+    "marker_forward": 0.0,         # cm the claw marker sits out in front of the tips (away from the base)
+    "arm_lengths": None,           # real arm [A, B, C, D] cm for the kinematic model (see `touch`)
+    "camera_correct": True,        # nudge each move with the claw marker reading
     "hover_extra": 6.0,
     "hand_height": 5.0,
     "chessboard_inner": [9, 6],
@@ -74,6 +80,7 @@ DEFAULTS = {
     "babble_samples": 800,
     "babble_step": 120,
     "babble_settle": 0.6,
+    "babble_range": 0,             # us around ready for J0-J3 while babbling (0 = full limits)
     "babble_min_height": 1.5,      # fingertip height; below this babbling pulls back
 
     # --- optional parts ---
@@ -151,6 +158,8 @@ PATHS = {
     "babble_sim": "babble/samples_sim.jsonl",
     "body": "models/body.pt",
     "body_sim": "models/body_sim.pt",
+    "kinematic": "models/kinematic.json",
+    "touch": "touch_points.jsonl",
     "sessions": "sessions",
     "events": "events.json",
     "task": "models/task.json",

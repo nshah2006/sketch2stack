@@ -22,7 +22,7 @@ import time
 from . import config as C
 from .catalog import block_yaw_from_long_axis, fold180
 from .motion import Motion
-from .perception import BlockTracker, classify, claw_tip
+from .perception import BlockTracker, classify, claw_tip, tip_from_pixel
 from .planner import plan as make_plan
 
 LED = {"idle": 0, "building": 1, "waiting": 2, "done": 3, "stopped": 4}
@@ -118,7 +118,7 @@ class Builder:
                     self.claw = obs.claw
                     self.claw_seen_t = obs.t
                     self.claw_seq += 1
-                    self.claw_hist.append(obs.claw)
+                    self.claw_hist.append(dict(obs.claw, px=obs.claw_px))
                 self.cond.notify_all()
             self._fps_n += 1
             now = time.monotonic()
@@ -182,7 +182,22 @@ class Builder:
                 return None
             recent = list(self.claw_hist)[-got:]
         avg = {k: sum(c.get(k, 0.0) for c in recent) / len(recent) for k in ("x", "y", "z", "nx", "ny", "down")}
-        return claw_tip(avg, self.cfg["marker_to_fingertip"])
+        px = [c["px"] for c in recent if c.get("px") is not None]
+        calib = getattr(self.source, "calib", None)
+        if px and calib is not None and hasattr(self.body, "angles"):
+            # real arm with the kinematic model: the marker's tilt estimate is only good
+            # to ~1 cm, so take the tips' height and claw tilt from the model and read
+            # x, y off the marker's pixel instead
+            pulses = list(self.arm.targets[:4])
+            z = float(self.body.forward(pulses)[0][2])
+            tilt = 180.0 - float(self.body.angles(pulses)[3][0])
+            u = sum(p[0] for p in px) / len(px)
+            v = sum(p[1] for p in px) / len(px)
+            hit = tip_from_pixel(calib, self.cfg, u, v, z, (self.body.p["bx"], self.body.p["by"]), tilt)
+            if hit is not None:
+                return {"x": hit[0], "y": hit[1], "z": z, "down": math.cos(math.radians(tilt))}
+        return claw_tip(avg, self.cfg["marker_to_fingertip"], self.cfg.get("marker_forward", 0.0),
+                        self.cfg["layout"]["base"], self.cfg.get("claw_normal_bias"))
 
     def wait_resume(self):
         """Called by motion while the safety stop or a user pause is active."""

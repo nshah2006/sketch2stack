@@ -227,4 +227,7 @@ def make_arm(cfg, world=None, clock=None):
         if world is None:
             raise ArmError("use_sim is true but no simulator world was given")
         return Arm(cfg, transport=world.serial_port(), clock=world.clock)
+    if cfg.get("arm_type") == "xarm":
+        from .xarm_driver import XArm
+        return XArm(cfg, clock=clock)
     return Arm(cfg, clock=clock)

@@ -21,15 +21,73 @@ class Observation:
     claw_px: tuple = None
 
 
-def claw_tip(claw, marker_to_fingertip):
+def arm_heading(x, y, base):
+    """Turntable heading (deg) of a point, as seen from the arm's base."""
+    return math.degrees(math.atan2(x - base[0], -(y - base[1])))
+
+
+def unbias_normal(n, bias):
+    """Rotate a measured marker normal by the fixed rotation that takes `bias`
+    (the normal measured with the claw truly vertical) to straight up."""
+    if not bias:
+        return np.asarray(n, float)
+    b = np.asarray(bias, float)
+    b = b / np.linalg.norm(b)
+    z = np.array([0.0, 0.0, 1.0])
+    axis = np.cross(b, z)
+    s, c = np.linalg.norm(axis), float(np.dot(b, z))
+    if s < 1e-9:
+        return np.asarray(n, float)
+    axis = axis / s
+    K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    R = np.eye(3) + s * K + (1 - c) * (K @ K)
+    return R @ np.asarray(n, float)
+
+
+def claw_tip(claw, marker_to_fingertip, forward=0.0, base=None, bias=None):
     """Fingertip position from a claw-marker reading. The marker faces away from
     the fingers, so the tips sit marker_to_fingertip cm behind its face normal.
+    forward: how far the marker sits out in front of the tips (cm), measured
+    away from the arm's base (a marker card that sticks out past the wrist).
     Works even when the claw isn't pointing straight down."""
     if claw is None:
         return None
-    nx, ny, nz = claw.get("nx", 0.0), claw.get("ny", 0.0), claw["down"]
+    if bias is not None and len(bias) == 4 and base is not None:
+        # the tilt bias turns with the arm: rotate it from the heading it was measured at
+        d = math.radians(arm_heading(claw["x"], claw["y"], base) - bias[3])
+        bx, by, bz = bias[:3]
+        bias = [bx * math.cos(d) - by * math.sin(d), bx * math.sin(d) + by * math.cos(d), bz]
+    elif bias is not None and len(bias) == 4:
+        bias = bias[:3]
+    nx, ny, nz = unbias_normal([claw.get("nx", 0.0), claw.get("ny", 0.0), claw["down"]], bias)
     k = marker_to_fingertip
-    return {"x": claw["x"] - k * nx, "y": claw["y"] - k * ny, "z": claw["z"] - k * nz, "down": nz}
+    x, y, z = claw["x"] - k * nx, claw["y"] - k * ny, claw["z"] - k * nz
+    if forward and base is not None:
+        r = np.array([claw["x"] - base[0], claw["y"] - base[1], 0.0])
+        n = np.array([nx, ny, nz])
+        f = r - np.dot(r, n) * n                 # outward direction, in the marker's plane
+        norm = np.linalg.norm(f)
+        if norm > 1e-6 and np.linalg.norm(r) > 3.0:
+            f /= norm
+            x, y, z = x - forward * f[0], y - forward * f[1], z - forward * f[2]
+    return {"x": float(x), "y": float(y), "z": float(z), "down": nz}
+
+
+def tip_from_pixel(calib, cfg, u, v, h, base, tilt=0.0):
+    """Tips from the marker's pixel, given the tips' height h and the claw's outward
+    tilt (deg, from the arm model). Tipping the claw outward swings the marker,
+    which sits k cm up the claw from the tips, back toward the base by k*sin(tilt)."""
+    k, fwd = cfg["marker_to_fingertip"], cfg.get("marker_forward", 0.0)
+    t = math.radians(tilt)
+    hit = calib.pixel_to_table(u, v, z=h + k * math.cos(t) + fwd * math.sin(t))
+    if hit is None:
+        return None
+    x, y = hit
+    out = fwd * math.cos(t) - k * math.sin(t)       # marker sits this far out past the tips
+    r = math.hypot(x - base[0], y - base[1])
+    if out and r > 3.0:
+        x, y = x - out * (x - base[0]) / r, y - out * (y - base[1]) / r
+    return float(x), float(y)
 
 
 # ===================================================================== blocks (real images)
