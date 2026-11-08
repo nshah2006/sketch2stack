@@ -3,3 +3,4 @@ opencv-contrib-python<4.11
 mediapipe==0.10.14
 pyserial
 torch
+mujoco>=3.2            # twin.py / fleet.py (digital twin)

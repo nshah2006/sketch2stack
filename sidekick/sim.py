@@ -451,6 +451,13 @@ class World:
                 tops.append(o.z + o.h)
         return max(tops) if tops else 0.0
 
+    # ---- hooks (twin.py swaps these for real rigid-body physics)
+    def _release(self, b, finger_z):
+        b.z = self._rest_height(b)
+
+    def _physics(self, pose):
+        pass
+
     def _step(self, t):
         with self.lock:
             self.emu.update(t)
@@ -485,7 +492,7 @@ class World:
                         b.held = False
                         b.x, b.y = float(fx), float(fy)
                         b.yaw = ((self.grip_axis() + b.rel) + 90) % 180 - 90
-                        b.z = self._rest_height(b)
+                        self._release(b, float(fz))
             if closed_now:
                 self._closed_before = True
             elif open_now:
@@ -494,6 +501,7 @@ class World:
                 if b.held:
                     b.x, b.y = float(fx), float(fy)
                     b.yaw = ((self.grip_axis() + b.rel) + 90) % 180 - 90
+            self._physics(pose)
             self.person.step(self.DT, t)
             hand = self.person.hand
             contact = False
@@ -506,6 +514,8 @@ class World:
             if t >= self._next_frame:
                 self._next_frame += 1.0 / self.camera_fps
                 obs = self._observe(t, pose)
+                if obs is None:
+                    return
                 if self._frames.full():
                     try:
                         self._frames.get_nowait()
