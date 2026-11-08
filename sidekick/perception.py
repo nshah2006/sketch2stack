@@ -133,7 +133,9 @@ def detect_blocks(image, cfg, calib, markers=None, claw_px=None, hands_px=None):
                 continue
             rect = cv2.minAreaRect(cnt)
             (cx, cy) = rect[0]
-            p = calib.pixel_to_table(cx, cy, h)
+            # the blob is the top face plus the sides the camera can see, so its centre
+            # sits over the block's mid-height, not its top
+            p = calib.pixel_to_table(cx, cy, h / 2)
             if p is None:
                 continue
             # measure the footprint on the table (top face at block height)
@@ -171,7 +173,7 @@ def classify(detections, catalog, calib=None):
         d["type"] = tid
         if tid and calib is not None and d.get("px") is not None and "z" not in d:
             top = catalog.height(tid)
-            p = calib.pixel_to_table(*d["px"], top)
+            p = calib.pixel_to_table(*d["px"], top / 2)
             if p:
                 d["x"], d["y"] = p
             if d.get("box_px"):

@@ -101,7 +101,8 @@ class Motion:
         """blk: tracked block {x, y, type, color, z?}. -> "ok" | "miss" | "unreachable" | "abort" """
         z0 = float(blk.get("z") or 0.0)
         h = self.catalog.height(blk["type"], blk.get("pose", 0))
-        x, y = blk["x"], blk["y"]
+        dx, dy = self.cfg.get("pick_offset", [0.0, 0.0])      # hand-tuned camera bias, cm
+        x, y = blk["x"] + dx, blk["y"] + dy
         roll = self.roll_for(grip_axis, x, y)
         open_, closed = self.cfg["claw_open"], self.cfg["claw_closed"]
         hover = self.cfg.hover_z(z0, h)
