@@ -614,8 +614,21 @@ def cmd_pick_test(cfg, a):
             if not started:
                 print(probs)
                 break
+            seen = 0
+            last_blocks = None
             while b.busy():
-                time.sleep(0.2)
+                snap = b.snapshot()
+                for line in snap["log"][seen:] if len(snap["log"]) >= seen else snap["log"]:
+                    print("   ", line)
+                seen = len(snap["log"])
+                if snap.get("prompt"):
+                    px, py = cfg["layout"]["pickup"]
+                    blocks = [f"({o['x']:.0f}, {o['y']:.0f})" for o in snap["blocks"]]
+                    if blocks != last_blocks:
+                        print(f"    waiting: pickup spot is ({px:.0f}, {py:.0f}); camera sees blocks at "
+                              f"{', '.join(blocks) or 'nothing'}")
+                        last_blocks = blocks
+                time.sleep(0.5)
             res = b.snapshot()["result"]
             ok += res == "done"
             print(f"  pick {k + 1}: {res}")
@@ -657,12 +670,16 @@ def cmd_build(cfg, a):
             print(f"  {p['level']}: {p['msg']}")
         if not ok:
             return
-        last = None
+        last, seen = None, 0
         while b.busy():
             s = b.snapshot()
             if s["action"] != last:
                 print(" ", s["action"], flush=True)
                 last = s["action"]
+            for line in s["log"][seen:]:
+                if line.startswith("block seen") or "miss" in line or "off after" in line:
+                    print("   ", line, flush=True)
+            seen = len(s["log"])
             time.sleep(0.2)
         print("result:", b.snapshot()["result"])
     except KeyboardInterrupt:

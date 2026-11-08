@@ -50,7 +50,8 @@ DEFAULTS = {
     # from the camera, so babbling can't start from home). Measure with jog.
     "ready": [1500, 1685, 2056, 2093, 1500, 1300],
     "claw_open": 1300,                                 # measure
-    "claw_closed": 1800,                               # measure
+    "claw_closed": 1800,
+    "pick_offset": [0.0, 0.0],     # cm added to a seen block's x, y before picking (fix a steady miss)
     "step_us": 8,                                      # per 20 ms tick
     "us_per_degree": 7.4,
 
