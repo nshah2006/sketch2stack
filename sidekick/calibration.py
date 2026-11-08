@@ -227,6 +227,27 @@ class Calibration:
         self.table_error = err
         return {"error_px": err, "camera": cam.tolist(), "height": float(cam[2]), "used": sorted(used)}
 
+    def lens_from_height(self, markers, cfg, size, height_cm):
+        """No usable chessboard calibration: build a simple lens (no distortion,
+        center principal point) whose focal length puts the camera at the
+        measured height above the board. Returns the focal length in px."""
+        w, h = size
+        self.dist = np.zeros(5)
+        lo, hi = 0.3 * w, 4.0 * w
+        for _ in range(60):                       # camera height grows with focal length
+            f = (lo + hi) / 2
+            self.K = np.array([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1]], np.float64)
+            try:
+                got = self.calibrate_table(markers, cfg)["height"]
+            except ValueError:
+                got = 0.0
+            if got < height_cm:
+                lo = f
+            else:
+                hi = f
+        self.image_size, self.lens_error = [int(w), int(h)], None
+        return f
+
     def camera_moved(self, markers, tol_px=3.0):
         """True if any saved table-marker corner moved more than tol_px."""
         for mid, saved in self.marker_px.items():
