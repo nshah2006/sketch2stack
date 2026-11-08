@@ -702,6 +702,18 @@ def cmd_touch(cfg, a):
                     with open(out, "a") as f:
                         f.write(_json.dumps({"p": pulses, "x": m["x"], "y": m["y"], "z": m["z"]}) + "\n")
                     print(f"  saved point at x {m['x']:.1f}  y {m['y']:.1f}  (camera z {m['z']:.1f})")
+                elif c == "zero":
+                    raw = read_claw(st.source, 30, timeout=6.0, raw=True)
+                    if raw is None:
+                        print("  claw marker not seen; nothing changed")
+                        continue
+                    nv = np.array([raw["nx"], raw["ny"], raw["down"]])
+                    nv = nv / np.linalg.norm(nv)
+                    cfg["claw_normal_bias"] = [round(float(v), 4) for v in nv]
+                    cfg["marker_to_fingertip"] = round(float(raw["z"]), 2)
+                    C.save(cfg)
+                    print(f"  zeroed: marker tilt bias {np.degrees(np.arccos(min(1.0, nv[2]))):.0f} deg, "
+                          f"marker_to_fingertip {cfg['marker_to_fingertip']} cm. Now `save` this point.")
                 elif c == "undo":
                     if out.exists():
                         lines = open(out).readlines()[:-1]
@@ -742,6 +754,7 @@ def cmd_fit_arm(cfg, a):
 
 __doc_touch__ = """Touch points: jog the claw STRAIGHT DOWN until the tips just touch the paper, then type save.
   <joint> <us> / <joint> +<us>   move (same as jog)      save    store this point
+  zero   (first point only) claw straight down, tips touching: re-zero the camera's claw reading
   undo   remove the last point     clear   remove all     fit   fit the arm model     q   quit
 Do 6-10 points spread over where the arm will build: left, right, near, far."""
 
