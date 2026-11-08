@@ -211,8 +211,17 @@ class Calibration:
                 used[mid] = markers[mid]
         if len(used) < 3:
             raise ValueError(f"Only {len(used)} table markers visible ({sorted(used)}); need at least 3.")
-        obj, img = np.vstack(obj), np.vstack(img)
-        ok, rvec, tvec = cv2.solvePnP(obj, img, self.K, self.dist, flags=cv2.SOLVEPNP_ITERATIVE)
+        # marker CENTERS only: a card taped a few degrees crooked moves its corners
+        # but not its center, so it can't skew the table pose
+        # (corners first to get an unambiguous pose, then refine on the centers)
+        ok, rvec, tvec = cv2.solvePnP(np.vstack(obj), np.vstack(img).astype(np.float64), self.K, self.dist,
+                                      flags=cv2.SOLVEPNP_ITERATIVE)
+        if not ok:
+            raise ValueError("solvePnP failed")
+        obj = np.array([o.mean(axis=0) for o in obj], np.float64)
+        img = np.array([np.asarray(i, np.float64).mean(axis=0) for i in img], np.float64)
+        ok, rvec, tvec = cv2.solvePnP(obj, img, self.K, self.dist, rvec, tvec, useExtrinsicGuess=True,
+                                      flags=cv2.SOLVEPNP_ITERATIVE)
         if not ok:
             raise ValueError("solvePnP failed")
         proj, _ = cv2.projectPoints(obj, rvec, tvec, self.K, self.dist)
