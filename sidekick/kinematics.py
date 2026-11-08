@@ -7,11 +7,12 @@ paper, position measured by the camera).
 Same interface as body_model.BodyModel: solve(target) and reachable(x, y).
 
 Angles (degrees, measured from straight up, positive = leaning toward the work
-area), from the servo pulses J (us, 8 us per degree on the xArm):
-    a1 = -(J1 - o1) / 8                 shoulder link
-    a2 = a1 + (J2 - o2) / 8             forearm
-    a3 = a2 - (J3 - o3) / 8             claw (180 = pointing straight down)
-    heading = s0 * (J0 - o0) / 8        turntable, 0 = facing the human (-y)
+area), from the servo pulses J (us, k = 8.33 us per degree on the xArm: 1000
+servo units = 240 deg = 2000 us):
+    a1 = -(J1 - o1) / k                 shoulder link
+    a2 = a1 + (J2 - o2) / k             forearm
+    a3 = a2 - (J3 - o3) / k             claw (180 = pointing straight down)
+    heading = s0 * (J0 - o0) / k        turntable, 0 = facing the human (-y)
 """
 import json
 import math
@@ -20,15 +21,21 @@ import numpy as np
 
 from . import config as C
 
-US_PER_DEG = 8.0
-FIT_KEYS = ["o0", "o1", "o2", "o3", "A", "bx", "by"]
+US_PER_DEG = 8.333
+FIT_KEYS = ["o0", "o1", "o2", "o3", "bx", "by", "k"]
+# how much the fit trusts each thing (one "unit" of residual each):
+SIG_XY = 0.4        # cm, camera position of a touch point
+SIG_Z = 0.3         # cm, the tips were touching (z known exactly)
+SIG_DOWN = 4.0      # deg, the claw was pointing straight down
+SIG_OFFSET = 150.0  # us, joint offsets vs the upright-pose guess
+SIG_K = 0.3         # us/deg vs the servo spec
 
 
 def default_params(cfg, lengths):
     A, B, Cl, D = lengths
     base = cfg["layout"]["base"]
     return {"A": A, "B": B, "C": Cl, "D": D, "bx": float(base[0]), "by": float(base[1]),
-            "o0": 1488.0, "o1": 1466.0, "o2": 1700.0, "o3": 1426.0, "s0": 1.0}
+            "o0": 1488.0, "o1": 1466.0, "o2": 1700.0, "o3": 1426.0, "s0": 1.0, "k": US_PER_DEG}
 
 
 class KinematicBody:
@@ -56,10 +63,11 @@ class KinematicBody:
     def angles(self, pulses):
         J = np.asarray(pulses, float).reshape(-1, 4)
         p = self.p
-        a1 = -(J[:, 1] - p["o1"]) / US_PER_DEG
-        a2 = a1 + (J[:, 2] - p["o2"]) / US_PER_DEG
-        a3 = a2 - (J[:, 3] - p["o3"]) / US_PER_DEG
-        hd = p["s0"] * (J[:, 0] - p["o0"]) / US_PER_DEG
+        k = p.get("k", 8.0)
+        a1 = -(J[:, 1] - p["o1"]) / k
+        a2 = a1 + (J[:, 2] - p["o2"]) / k
+        a3 = a2 - (J[:, 3] - p["o3"]) / k
+        hd = p["s0"] * (J[:, 0] - p["o0"]) / k
         return hd, a1, a2, a3
 
     def forward(self, pulses):
@@ -103,10 +111,11 @@ class KinematicBody:
         a1 = math.degrees(math.atan2(rw, zw)) - math.degrees(math.atan2(Cl * math.sin(math.radians(e)),
                                                                            B + Cl * math.cos(math.radians(e))))
         a2 = a1 + e
-        J = np.array([p["o0"] + p["s0"] * hd * US_PER_DEG,
-                      p["o1"] - a1 * US_PER_DEG,
-                      p["o2"] + e * US_PER_DEG,
-                      p["o3"] - (a3 - a2) * US_PER_DEG])
+        k = p.get("k", 8.0)
+        J = np.array([p["o0"] + p["s0"] * hd * k,
+                      p["o1"] - a1 * k,
+                      p["o2"] + e * k,
+                      p["o3"] - (a3 - a2) * k])
         inside = bool(np.all(J >= self.jmin) and np.all(J <= self.jmax))
         J = np.clip(J, self.jmin, self.jmax)
         pulses = [int(round(v)) for v in J]
@@ -120,32 +129,45 @@ class KinematicBody:
 
 
 # ---------------------------------------------------------------- fitting
-def _residuals(body, pts, w_down=0.15):
+def _targets(pts):
+    return np.array([[q["x"], q["y"], q.get("h", 0.0)] for q in pts], float)
+
+
+def _residuals(body, pts, prior):
     P = np.array([q["p"] for q in pts], float)
-    T = np.array([[q["x"], q["y"], 0.0] for q in pts], float)
+    T = _targets(pts)
     f = body.forward(P)
-    _, _, _, a3 = body.angles(P)
-    res = (f[:, :3] - T).ravel()
-    return np.concatenate([res, w_down * (a3 - 180.0)])    # claw was pointing down at each touch
+    a3 = body.angles(P)[3]
+    p = body.p
+    return np.concatenate([
+        (f[:, :2] - T[:, :2]).ravel() / SIG_XY,
+        (f[:, 2] - T[:, 2]) / SIG_Z,
+        (a3 - 180.0) / SIG_DOWN,                      # claw was pointing down at each touch
+        [(p[o] - prior[o]) / SIG_OFFSET for o in ("o0", "o1", "o2", "o3")],
+        [(p["k"] - prior["k"]) / SIG_K]])
 
 
 def fit(params, pts, jmin, jmax, iters=200):
-    """Least squares (Levenberg-Marquardt) over the joint offsets, shoulder height
-    and base position, for both turntable directions. -> (body, rms_cm, worst_cm)"""
+    """Least squares (Levenberg-Marquardt) over the joint offsets, base position and
+    degrees-per-pulse, for both turntable directions. Link lengths stay at the ruler
+    values; the offsets are pulled toward the upright-pose guess so a few clustered
+    points can't drag them somewhere unphysical. -> (body, rms_cm, worst_cm, per-point cm)"""
+    prior = dict(params)
+    prior.setdefault("k", US_PER_DEG)
     best = None
     for s0 in (1.0, -1.0):
-        p = dict(params, s0=s0)
+        p = dict(prior, s0=s0)
         x = np.array([p[k] for k in FIT_KEYS], float)
         lam = 1e-2
 
         def resid(xv):
-            return _residuals(KinematicBody(dict(p, **dict(zip(FIT_KEYS, xv))), jmin, jmax), pts)
+            return _residuals(KinematicBody(dict(p, **dict(zip(FIT_KEYS, xv))), jmin, jmax), pts, prior)
 
         r = resid(x)
         for _ in range(iters):
             Jm = np.zeros((len(r), len(x)))
             for i in range(len(x)):
-                h = 1e-3 * max(1.0, abs(x[i]))
+                h = 1e-4 * max(1.0, abs(x[i]))
                 xh = x.copy()
                 xh[i] += h
                 Jm[:, i] = (resid(xh) - r) / h
@@ -165,15 +187,14 @@ def fit(params, pts, jmin, jmax, iters=200):
         p.update(dict(zip(FIT_KEYS, x.tolist())))
         body = KinematicBody(p, jmin, jmax)
         pos = body.forward(np.array([q["p"] for q in pts], float))[:, :3]
-        tgt = np.array([[q["x"], q["y"], 0.0] for q in pts])
-        d = np.linalg.norm(pos - tgt, axis=1)
+        d = np.linalg.norm(pos - _targets(pts), axis=1)
         rms, worst = float(np.sqrt(np.mean(d ** 2))), float(d.max())
-        if best is None or rms < best[1]:
-            best = (body, rms, worst)
-    body, rms, worst = best
+        if best is None or r @ r < best[4]:
+            best = (body, rms, worst, d, float(r @ r))
+    body, rms, worst, d, _ = best
     body.p["fit_error"] = rms
     body.fit_error = rms
-    return body, rms, worst
+    return body, rms, worst, d.tolist()
 
 
 def load_points(path=None):
