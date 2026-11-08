@@ -670,12 +670,16 @@ def cmd_build(cfg, a):
             print(f"  {p['level']}: {p['msg']}")
         if not ok:
             return
-        last = None
+        last, seen = None, 0
         while b.busy():
             s = b.snapshot()
             if s["action"] != last:
                 print(" ", s["action"], flush=True)
                 last = s["action"]
+            for line in s["log"][seen:]:
+                if line.startswith("block seen") or "miss" in line or "off after" in line:
+                    print("   ", line, flush=True)
+            seen = len(s["log"])
             time.sleep(0.2)
         print("result:", b.snapshot()["result"])
     except KeyboardInterrupt:
