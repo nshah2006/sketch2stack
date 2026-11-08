@@ -573,7 +573,7 @@ def cmd_goto_test(cfg, a):
         for x in np.linspace(x0, x1, 3):
             for y in np.linspace(y0, y1, 3):
                 b.motion.go_to(x, y, z + 3, correct=False)            # come in from above
-                r = b.motion.go_to(x, y, z, correct=not real)
+                r = b.motion.go_to(x, y, z, correct=True)
                 if real:
                     time.sleep(0.4)
                     tilt = 0.0
@@ -818,20 +818,8 @@ def cmd_touch(cfg, a):
 
 
 def _tip_from_px(calib, cfg, u, v, h, base, tilt=0.0):
-    """Tips from the marker's pixel, given the tips' height h and the claw's outward
-    tilt (deg, from the arm model). Tipping the claw outward swings the marker,
-    which sits k cm up the claw from the tips, back toward the base by k*sin(tilt)."""
-    k, fwd = cfg["marker_to_fingertip"], cfg.get("marker_forward", 0.0)
-    t = math.radians(tilt)
-    hit = calib.pixel_to_table(u, v, z=h + k * math.cos(t) + fwd * math.sin(t))
-    if hit is None:
-        return None
-    x, y = hit
-    out = fwd * math.cos(t) - k * math.sin(t)       # marker sits this far out past the tips
-    r = math.hypot(x - base[0], y - base[1])
-    if out and r > 3.0:
-        x, y = x - out * (x - base[0]) / r, y - out * (y - base[1]) / r
-    return float(x), float(y)
+    from .perception import tip_from_pixel
+    return tip_from_pixel(calib, cfg, u, v, h, base, tilt)
 
 
 def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0, base=None, tilt=0.0):

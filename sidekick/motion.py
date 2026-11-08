@@ -70,7 +70,7 @@ class Motion:
                 self.log("claw marker not visible; accepting the move")
                 return "ok"
             ex, ey, ez = target[0] - m["x"], target[1] - m["y"], target[2] - m["z"]
-            if math.hypot(ex, ey) <= 0.6 and abs(ez) <= 1.0:
+            if math.hypot(ex, ey) <= 0.4 and abs(ez) <= 1.0:
                 return "ok"
             if attempt == 3:
                 self.log(f"still {math.hypot(ex, ey):.1f} cm off after 3 corrections; continuing")
