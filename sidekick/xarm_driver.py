@@ -51,12 +51,20 @@ class XArm:
             import xarm
         except ImportError as e:
             raise ArmError("xArm needs `pip install xarm hidapi` (hidapi, not hid).") from e
-        try:
-            self.dev = xarm.Controller("USB")
-        except Exception as e:
-            raise ArmError(f"No xArm on USB ({e}). Power adapter on? USB data cable plugged in?") from e
+        import time
+        last = None
+        for attempt in range(4):                 # the USB link often needs a retry right after
+            try:                                 # another program let go of it
+                self.dev = xarm.Controller("USB")
+                self.battery_v = self._call(self.dev.getBatteryVoltage)
+                break
+            except Exception as e:
+                last, self.dev = e, None
+                time.sleep(1.0)
+        else:
+            raise ArmError(f"No xArm on USB ({last}). Close other programs using the arm (jog, UI), "
+                           "check the power adapter is on and the USB data cable is plugged in.") from last
         self.port_name = "xArm USB"
-        self.battery_v = self._call(self.dev.getBatteryVoltage)
         if self.battery_v is not None and self.battery_v < 6.0:
             raise ArmError(f"xArm supply reads {self.battery_v:.1f} V. Plug in and switch on the 7.5 V adapter.")
         return self
