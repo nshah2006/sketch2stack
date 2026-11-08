@@ -53,6 +53,7 @@ class Builder:
                        "steps": [], "log": [], "safety": False, "fps": 0.0, "result": None,
                        "run_id": 0, "paused": False}
         self.plan_steps = []
+        self._revision = None      # steps waiting to be swapped in at a step boundary
         self._fps_t, self._fps_n = time.monotonic(), 0
         self._worker = None
         self._start_lock = threading.Lock()      # two Build clicks can't both start a run
@@ -267,6 +268,54 @@ class Builder:
         self.paused = False
         self.log("stop requested")
 
+    def _resync_steps(self, steps, done_upto):
+        """Redraw the step list after a revision, keeping what is already built."""
+        with self.lock:
+            old = self.status["steps"]
+            self.status["steps"] = [
+                old[k] if k < done_upto and k < len(old)
+                else {"label": self._step_label(s), "state": "todo", "index": s["index"]}
+                for k, s in enumerate(steps)]
+            self.status["total"] = len(steps)
+
+    def revise(self, steps):
+        """Replace the blocks that have not been placed yet.
+
+        Only the future is ours to change: the arm can pick from a supply zone
+        and place, but it has no way to take a block back off the build, so a
+        step already done is a fact. -> (ok, message)
+        """
+        if not self.busy():
+            return False, "the arm is not building"
+        with self.lock:
+            done = sum(1 for s in self.status["steps"] if s["state"] in ("done", "failed"))
+            active = next((k for k, s in enumerate(self.status["steps"]) if s["state"] == "active"), None)
+        # the step in the claw right now is already committed too
+        fixed = max(done, (active + 1) if active is not None else 0)
+        if len(steps) < fixed:
+            return False, f"{fixed} blocks are already placed; they cannot be taken back off"
+        with self.lock:
+            self._revision = list(steps[fixed:])
+        return True, f"will change the {len(steps) - fixed} blocks still to come"
+
+    def remaining(self):
+        """The steps not yet placed, and how many are already committed."""
+        with self.lock:
+            done = sum(1 for s in self.status["steps"] if s["state"] in ("done", "failed"))
+            active = next((k for k, s in enumerate(self.status["steps"]) if s["state"] == "active"), None)
+        fixed = max(done, (active + 1) if active is not None else 0)
+        return list(self.plan_steps[fixed:]), fixed
+
+    def _gesture(self, name):
+        """A nod or a head-shake at the person. Never lets a build fail over it:
+        gestures refuse themselves while carrying a block or during a stop."""
+        if not self.cfg.get("gestures", True):
+            return
+        try:
+            getattr(self.motion, name)()
+        except Exception as e:
+            self.log(f"gesture {name} skipped: {e!r}")
+
     def _step_state(self, i, state):
         with self.lock:
             self.status["steps"][i]["state"] = state
@@ -278,10 +327,24 @@ class Builder:
         result = "done"
         try:
             self.motion.home()
-            for i, st in enumerate(steps):
+            i = 0
+            while i < len(steps):
                 if self.cancel.is_set():
                     result = "stopped"
                     break
+                # Swap in a revision only here, between two placements. Never
+                # while the claw is moving, and never over a step already done.
+                with self.lock:
+                    pending, self._revision = self._revision, None
+                if pending is not None:
+                    steps = list(steps[:i]) + list(pending)
+                    self.plan_steps = steps
+                    self._resync_steps(steps, i)
+                    self.log(f"plan revised: {len(steps) - i} blocks left")
+                    self._gesture("nod")  # "got it"
+                    if i >= len(steps):
+                        break
+                st = steps[i]
                 self._step_state(i, "active")
                 r = self._do_step(i, st)
                 self._step_state(i, "done" if r == "ok" else "failed")
@@ -290,6 +353,7 @@ class Builder:
                     break
                 if r != "ok":
                     result = "incomplete"
+                i += 1
             if not self.cancel.is_set():
                 if not self.safety_stopped and not self.paused:
                     self.abort.clear()
@@ -327,9 +391,12 @@ class Builder:
                     msg = (f"Wrong block on the pickup spot. Swap it for a "
                            f"{self.catalog.types[st['type']]['name'].lower()}.")
                     with self.lock:
-                        if self.status.get("prompt") != msg:
+                        fresh = self.status.get("prompt") != msg
+                        if fresh:
                             self.status["prompt"] = msg
                             self.status["log"] = (self.status["log"] + [msg])[-40:]
+                    if fresh:
+                        self._gesture("refuse")     # only on the first look, not every frame
                     return None
             return b
         return None
@@ -384,6 +451,7 @@ class Builder:
         self.log(msg)
         self.action("moving out of the way")
         self.motion._move(list(self.cfg["park"]))       # stay clear of the person's hand
+        self._gesture("listen")                         # "this one is for you"
         self.action(msg)
         if self.feeder is not None:
             self.feeder.request(st["type"], st["color"], st.get("pose", 0))

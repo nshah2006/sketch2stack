@@ -8,6 +8,8 @@ import { TEMPLATES } from '../../mocks/templates'
 import { useBackend } from '../../backend'
 import { SketchCanvas } from './SketchCanvas'
 import { Ruler } from './Ruler'
+import { BoardModeToggle, type BoardMode } from '../blocks/BoardModeToggle'
+import { ColourPicker } from '../blocks/ColourPicker'
 
 type Props = {
   strokes: Stroke[]
@@ -20,6 +22,11 @@ type Props = {
   /** Scale the drawing up to fill the build strip instead of reading the board 1:1. */
   fitStrip: boolean
   onFitStrip: (v: boolean) => void
+  boardMode: BoardMode
+  onBoardMode: (m: BoardMode) => void
+  /** Preferred block colour for the generated build; null = whatever we have most of. */
+  blockColor: string | null
+  onBlockColor: (c: string | null) => void
 }
 
 const WIDTHS = [3, 6, 11]
@@ -51,6 +58,10 @@ export function SketchStage({
   onRename,
   fitStrip,
   onFitStrip,
+  boardMode,
+  onBoardMode,
+  blockColor,
+  onBlockColor,
 }: Props) {
   const [tool, setTool] = useState<'pen' | 'eraser'>('pen')
   const [width, setWidth] = useState(6)
@@ -110,7 +121,9 @@ export function SketchStage({
             aria-label="Project name"
           />
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <ColourPicker types={info?.catalog.types ?? []} value={blockColor} onChange={onBlockColor} />
+          <BoardModeToggle mode={boardMode} onMode={onBoardMode} />
           {Object.entries(TEMPLATES).map(([k, t]) => (
             <button
               key={k}

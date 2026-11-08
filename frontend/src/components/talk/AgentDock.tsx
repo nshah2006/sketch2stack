@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ChevronDown, Mic } from 'lucide-react'
+import { ChevronDown, Mic, MicOff } from 'lucide-react'
 import { PromptInput } from '@/components/ui/ai-chat-input'
 import { AgentOrb, VoiceBars, type VoiceLevels } from '@/components/voice/VoiceKit'
+import { useSpeech } from '@/components/voice/useSpeech'
+import { api } from '../../api'
 import { uid } from '../../store/storage'
 
 /** What the agent can see and do during a build. */
@@ -13,6 +15,7 @@ export type ArmAgent = {
   done: number
   total: number
   current?: string
+  runId: number
   pause: () => Promise<unknown>
   resume: () => Promise<unknown>
   stop: () => Promise<unknown>
@@ -23,7 +26,7 @@ export type ArmAgent = {
 type Msg = { id: string; from: 'user' | 'agent'; text: string }
 
 /** Turns what you said into an arm action. Keyword rules for now; an LLM can replace `interpret`. */
-function interpret(text: string, a: ArmAgent): { reply: string; run?: () => unknown } {
+function interpret(text: string, a: ArmAgent): { reply: string; run?: () => unknown; revise?: boolean } {
   const t = text.toLowerCase()
   const has = (re: RegExp) => re.test(t)
   if (has(/\b(stop|halt|emergency|freeze|e-?stop)\b/))
@@ -43,8 +46,12 @@ function interpret(text: string, a: ArmAgent): { reply: string; run?: () => unkn
           : `${a.done} of ${a.total} blocks placed${a.current ? `. Now: ${a.current.toLowerCase()}` : ''}.`,
     }
   if (has(/\b(faster|slower|speed)\b/)) return { reply: 'Speed is set when the robot server starts (--speed). Live speed control is not wired yet.' }
-  if (has(/\b(skip|swap|change|color|colour|taller|bigger|move)\b/))
-    return { reply: "Changing the build mid-run isn't supported yet. Stop it, edit the build, then build again." }
+  // Anything that sounds like a change to the build goes to the planner, which
+  // decides whether it is still possible. Only the blocks not yet placed can move.
+  if (has(/\b(skip|swap|change|colour|color|taller|shorter|bigger|smaller|add|remove|fewer|more|instead|make it|put|roof|cube|pillar|plank|bar|cylinder|arch)\b/))
+    return a.phase === 'running' || a.phase === 'paused'
+      ? { reply: '', revise: true }
+      : { reply: `Nothing is building right now (${a.phase}).` }
   return { reply: 'I can pause, resume, stop, give you the status, run the reach-in test, or build again. Try "how far along are we?"' }
 }
 
@@ -66,6 +73,8 @@ export function AgentDock({ open, onOpenChange, agent, voice, onListeningChange,
   const [thinking, setThinking] = useState(false)
   const [text, setText] = useState('')
   const [pendingVoice, setPendingVoice] = useState(false)
+  /** A change the planner accepted, waiting for the user to confirm it. */
+  const [pending, setPending] = useState<{ text: string; reply: string } | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([{ id: 'hi', from: 'agent', text: 'Talk or type to steer the build. Try “pause” or “how far along?”' }])
   const agentRef = useRef(agent)
   agentRef.current = agent
@@ -93,26 +102,62 @@ export function AgentDock({ open, onOpenChange, agent, voice, onListeningChange,
     setMsgs((m) => [...m.slice(-30), { id: uid(), from: 'user', text: said }])
     setThinking(true)
     setTimeout(async () => {
-      const { reply, run } = interpret(said, agentRef.current)
-      setThinking(false)
-      setMsgs((m) => [...m, { id: uid(), from: 'agent', text: reply }])
+      const { reply, run, revise } = interpret(said, agentRef.current)
       try {
+        if (revise) {
+          // Ask first, never act: this only reports what it would change.
+          const r = await api.revise(said, agentRef.current.runId, false)
+          setThinking(false)
+          setMsgs((m) => [...m, { id: uid(), from: 'agent', text: r.reply }])
+          setPending(r.ok ? { text: said, reply: r.reply } : null)
+          return
+        }
+        setThinking(false)
+        setMsgs((m) => [...m, { id: uid(), from: 'agent', text: reply }])
         await run?.()
       } catch (e) {
+        setThinking(false)
         setMsgs((m) => [...m, { id: uid(), from: 'agent', text: `That didn't work: ${(e as Error).message}` }])
       }
     }, 450)
   }
 
+  // Live recognition where the browser has it: each finished sentence goes through
+  // send(), so a build change is still only previewed until you press "Do it".
+  const speech = useSpeech({ onFinal: send, onLevels: voice.onLevels, onWord: voice.onWord })
+  const listening = recording || speech.listening
+
+  // Words appear in the input as they are heard; send() clears it when the sentence lands.
+  useEffect(() => {
+    if (speech.listening) setText(speech.interim)
+  }, [speech.interim, speech.listening])
+
+  useEffect(() => {
+    onListeningChange?.(listening)
+  }, [listening, onListeningChange])
+
+  // Why it stopped hearing you (blocked mic, lost connection) belongs in the chat.
+  useEffect(() => {
+    const why = speech.error
+    if (why) setMsgs((m) => [...m, { id: uid(), from: 'agent', text: why }])
+  }, [speech.error])
+
   // Hands-free: when you stop talking, what you said is sent.
   const onRecordingChange = (r: boolean) => {
+    if (r && speech.listening) speech.stop() // one mic at a time
     setRecording(r)
-    onListeningChange?.(r)
     if (r) setPendingVoice(false)
     if (!r && textRef.current.trim()) send(textRef.current)
   }
 
-  const status = recording ? 'Listening…' : thinking ? 'Working on it…' : agent.live ? `${agent.done}/${agent.total} placed · ${agent.phase}` : 'Build ' + agent.phase
+  /** The mic: stream when we can, else record and upload through PromptInput. */
+  const toggleVoice = () => {
+    if (!speech.supported) return setPendingVoice(true)
+    if (speech.listening) speech.stop()
+    else speech.start()
+  }
+
+  const status = listening ? 'Listening…' : thinking ? 'Working on it…' : agent.live ? `${agent.done}/${agent.total} placed · ${agent.phase}` : 'Build ' + agent.phase
 
   return (
     <div className={`flex justify-center ${className ?? ''}`}>
@@ -131,8 +176,8 @@ export function AgentDock({ open, onOpenChange, agent, voice, onListeningChange,
             </button>
             <button
               onClick={() => {
-                setPendingVoice(true)
                 onOpenChange(true)
+                toggleVoice()
               }}
               className="flex h-9 w-9 items-center justify-center rounded-full border border-pink/50 bg-ink text-pink transition-colors hover:border-pink hover:bg-pink-dim"
               aria-label="Talk to the arm with your voice"
@@ -161,21 +206,33 @@ export function AgentDock({ open, onOpenChange, agent, voice, onListeningChange,
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -4 }}
                       transition={{ duration: 0.15 }}
-                      className={`label ${recording ? '!text-pink-soft' : ''}`}
+                      className={`label ${listening ? '!text-pink-soft' : ''}`}
                     >
                       {status}
                     </motion.span>
                   </AnimatePresence>
                 </div>
-                <button className="icon-btn h-8 w-8" onClick={() => onOpenChange(false)} aria-label="Minimize agent">
-                  <ChevronDown size={16} />
-                </button>
+                <div className="flex items-center gap-1">
+                  {speech.supported && (
+                    <button
+                      className={`icon-btn h-8 w-8 ${speech.listening ? 'border-pink/60 text-pink' : ''}`}
+                      onClick={toggleVoice}
+                      aria-pressed={speech.listening}
+                      aria-label={speech.listening ? 'Stop listening' : 'Listen while I talk'}
+                    >
+                      {speech.listening ? <MicOff size={16} /> : <Mic size={16} />}
+                    </button>
+                  )}
+                  <button className="icon-btn h-8 w-8" onClick={() => onOpenChange(false)} aria-label="Minimize agent">
+                    <ChevronDown size={16} />
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-3 px-4 pt-2 sm:grid-cols-[112px_minmax(0,1fr)]">
                 <div className="flex flex-col items-center gap-1">
-                  <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening={recording} busy={thinking} className="aspect-square w-full" />
-                  <VoiceBars bandsRef={voice.bandsRef} kickRef={voice.kickRef} active={recording} count={14} className="h-6" />
+                  <AgentOrb levelRef={voice.levelRef} kickRef={voice.kickRef} listening={listening} busy={thinking} className="aspect-square w-full" />
+                  <VoiceBars bandsRef={voice.bandsRef} kickRef={voice.kickRef} active={listening} count={14} className="h-6" />
                 </div>
                 <div ref={logRef} className="h-28 space-y-1.5 overflow-y-auto pr-1 text-sm">
                   {msgs.map((m) => (
@@ -199,6 +256,41 @@ export function AgentDock({ open, onOpenChange, agent, voice, onListeningChange,
                   )}
                 </div>
               </div>
+
+              {pending && (
+                <div className="mx-4 mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-pink/50 bg-pink/10 px-3 py-2">
+                  <span className="text-xs text-fg">{pending.reply}</span>
+                  <span className="text-[11px] text-muted">Only the blocks still to come change.</span>
+                  <div className="ml-auto flex gap-2">
+                    <button
+                      className="btn border border-line px-2.5 py-1 text-xs"
+                      onClick={() => {
+                        setPending(null)
+                        setMsgs((m) => [...m, { id: uid(), from: 'agent', text: 'Left it as it was.' }])
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="btn-pink px-3 py-1 text-xs"
+                      onClick={async () => {
+                        const q = pending
+                        setPending(null)
+                        try {
+                          const r = await api.revise(q.text, agentRef.current.runId, true)
+                          setMsgs((m) => [...m, { id: uid(), from: 'agent',
+                            text: r.applied ? `Done. ${r.reply}` : r.reply }])
+                        } catch (e) {
+                          setMsgs((m) => [...m, { id: uid(), from: 'agent',
+                            text: `That didn't work: ${(e as Error).message}` }])
+                        }
+                      }}
+                    >
+                      Do it
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="flex gap-1.5 overflow-x-auto px-4 pb-2 pt-1">
                 {CHIPS.filter((c) => agent.sim || !c.includes('sim')).map((c) => (

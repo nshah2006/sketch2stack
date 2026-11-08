@@ -13,6 +13,8 @@ import { ProjectsDrawer, type ProjectAction } from '../components/layout/Project
 import { ProfileMenu } from '../components/layout/ProfileMenu'
 import { LabsModal } from '../components/layout/LabsModal'
 import { SketchStage } from '../components/sketch/SketchStage'
+import { BlockEditor, type Placed } from '../components/blocks/BlockEditor'
+import { BoardModeToggle, type BoardMode } from '../components/blocks/BoardModeToggle'
 import { GeneratingScreen } from '../components/anim/GeneratingScreen'
 import { ChooseStage } from '../components/build/ChooseStage'
 import { LiveStage } from '../components/live/LiveStage'
@@ -32,6 +34,9 @@ export function Workspace() {
   const [name, setName] = useState('Untitled sketch')
   const [strokes, setStrokes] = useState<Stroke[]>([])
   const [fitStrip, setFitStrip] = useState(false)
+  const [boardMode, setBoardMode] = useState<BoardMode>('draw')
+  const [blockColor, setBlockColor] = useState<string | null>(null)
+  const [placed, setPlaced] = useState<Placed[]>([])
   const [prompt, setPrompt] = useState('')
   const [builds, setBuilds] = useState<Build[]>([])
   const [buildIdx, setBuildIdx] = useState(0)
@@ -108,7 +113,7 @@ export function Workspace() {
     stageRef.current = 'generating'
     setStageRaw('generating')
     try {
-      const res = await api.generate(src.strokes, src.prompt, mine, fitStrip)
+      const res = await api.generate(src.strokes, src.prompt, mine, fitStrip, blockColor)
       if (mine !== genSeq.current || res.request_id !== mine) return // a newer request or the user moved on
       if (!res.builds.length) {
         toast("Couldn't turn that sketch into blocks. Try bolder, closed shapes.")
@@ -272,7 +277,36 @@ export function Workspace() {
               transition={{ type: 'spring', duration: 0.4, bounce: 0 }}
               className="h-full"
             >
-              {stage === 'sketch' && (
+              {stage === 'sketch' && boardMode === 'blocks' && (
+                <div className="flex h-full flex-col gap-4 p-4 lg:p-6">
+                  <header className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <span className="label">Block layout</span>
+                      <input
+                        value={name}
+                        onChange={(e) => {
+                          setName(e.target.value)
+                          if (pid.current) upsert({ id: pid.current, name: e.target.value })
+                        }}
+                        className="mt-1 block w-full max-w-xs rounded-md bg-transparent text-xl font-semibold tracking-tight outline-none focus:bg-raised"
+                        aria-label="Project name"
+                      />
+                    </div>
+                    <BoardModeToggle mode={boardMode} onMode={setBoardMode} />
+                  </header>
+                  <BlockEditor
+                    placed={placed}
+                    onPlaced={setPlaced}
+                    onBuild={(b) => {
+                      setBuilds([b])
+                      setBuildIdx(0)
+                      persist({ builds: [b], buildIds: [b.id], selectedBuild: 0, status: 'generated' })
+                      setStage('choose')
+                    }}
+                  />
+                </div>
+              )}
+              {stage === 'sketch' && boardMode === 'draw' && (
                 <SketchStage
                   strokes={strokes}
                   prompt={prompt}
@@ -293,6 +327,10 @@ export function Workspace() {
                   }}
                   fitStrip={fitStrip}
                   onFitStrip={setFitStrip}
+                  boardMode={boardMode}
+                  onBoardMode={setBoardMode}
+                  blockColor={blockColor}
+                  onBlockColor={setBlockColor}
                 />
               )}
               {stage === 'generating' && (

@@ -60,6 +60,10 @@ DEFAULTS = {
     "chessboard_inner": [9, 6],
     "chessboard_square": 2.5,
 
+    # Short acknowledgements (nod, refuse, look up) at the few moments the arm
+    # is dealing with a person. Off makes every build a little quicker.
+    "gestures": True,
+
     # --- safety ---
     "stop_distance": 10.0,
     "stop_claw_height": 25.0,
@@ -94,6 +98,12 @@ DEFAULTS = {
         "claw_marker_id": 10,
         "base": [25.0, 36.0],
         # build strip: x0, x1, y_front, y_back (front = human side)
+        # 4 cm deep on purpose. A deeper strip would let a plank or arch be turned
+        # a quarter (rot 90 needs 6-7 cm), but it can only grow forwards: behind is
+        # the supply zone and under the 9 cm inner reach limit. Pushing the front
+        # edge to y=19 moved every depth-0 block from 11.5 cm to 15.5 cm from the
+        # base, at the ragged outer edge of the arm's ring, and the simulated House
+        # build went from 3 mm to 30 mm worst placement. Not worth it.
         "build_area": [15.0, 35.0, 23.0, 27.0],
         # supply zones: x0, x1, y0, y1 (loose blocks are put here)
         "supply": {"left": [7.0, 15.0, 28.0, 34.0], "right": [35.0, 43.0, 28.0, 34.0]},

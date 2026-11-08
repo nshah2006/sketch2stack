@@ -11,8 +11,8 @@ from this file. "wood"/"wooden"/"brown"/"plain"/"natural" mean natural, the unpa
 The result is a planner design; webapi turns it into app blocks and checks it.
 """
 import json
-import os
 import re
+import urllib.error
 import urllib.request
 
 from . import envfile, planner, presets
@@ -325,13 +325,44 @@ def _norm_color(c):
     return COLOR_ALIAS.get(c, c) or None
 
 
+PROVIDER_NAMES = {"openai": "OpenAI", "nvidia": "NVIDIA"}   # only for the fallback messages
+
+
+def _chat(url, key, body, drop_json_mode=False):
+    """POST an OpenAI-shaped chat completion -> the reply text.
+    OpenAI-compatible providers don't all accept response_format, so on a 4xx we retry without it."""
+    tries = [body]
+    if drop_json_mode and "response_format" in body:
+        tries.append({k: v for k, v in body.items() if k != "response_format"})
+    for b in tries:
+        req = urllib.request.Request(url, json.dumps(b).encode(),
+                                     {"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read())["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            if b is tries[-1] or e.code not in (400, 404, 415, 422):
+                raise
+    return None
+
+
+def _json_obj(s):
+    """Model text -> dict. Without a JSON mode some models wrap it in ``` fences or add
+    chatter, so take the outermost braces; anything else raises and we fall back to the rules."""
+    s = str(s or "").strip()
+    a, b = s.find("{"), s.rfind("}")
+    return json.loads(s[a:b + 1] if 0 <= a < b else s)
+
+
 def llm_items(text, catalog):
-    """Free-form request -> (items, sup) via OpenAI, or None (no key, offline, or garbage).
+    """Free-form request -> (items, sup) via the configured LLM, or None (no key, offline, or garbage).
     Each block group says which group it sits on (`on`), so there are no connectors to misread.
     layout() and the planner check the result like any other."""
-    key = envfile.api_key()
-    if not key:
+    conf = envfile.llm_config()
+    if not conf:
         return None
+    base, key, model, provider = conf
+    who = PROVIDER_NAMES.get(provider, provider)
     types = {tid: {"name": t.get("name", tid), "size_cm": t["size"], "shape": t["shape"]}
              for tid, t in catalog.types.items()}      # no colors: stock is enforced here, not by the model
     system = (
@@ -357,14 +388,11 @@ def llm_items(text, catalog):
         'cube red (2, beside 1 right), roof (3, on [1,2]). '
         'Use only the ids above; no explanations. If the request has nothing to do with these blocks, '
         'return {"items":[]}.')
-    body = {"model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), "temperature": 0,
+    body = {"model": model, "temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}]}
-    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", json.dumps(body).encode(),
-                                 {"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(json.loads(r.read())["choices"][0]["message"]["content"])
+        data = _json_obj(_chat(base + "/chat/completions", key, body, drop_json_mode=provider != "openai"))
         raw = data["items"]
         ids = {int(i["id"]): k for k, i in enumerate(raw)}
         items = [{"tid": i["type"], "n": max(1, min(int(i.get("count") or 1), 20)),
@@ -382,7 +410,7 @@ def llm_items(text, catalog):
                 and int(b["of"]) in ids
             beside.append((ids[int(b["of"])], b["side"]) if ok else None)
     except Exception as e:                       # offline, bad key, bad JSON: fall back to the rules
-        print(f"dictation: OpenAI fallback failed ({type(e).__name__})", flush=True)
+        print(f"dictation: {who} fallback failed ({type(e).__name__})", flush=True)
         return None
     if not items or any(i["tid"] not in catalog.types for i in items):
         return None
@@ -394,7 +422,7 @@ def llm_items(text, catalog):
         if re.search(r"\b" + re.escape(pr["name"].lower()) + r"s?\b", low):
             allowed |= {b["type"] for b in pr["blocks"]}
     if any(i["tid"] not in allowed for i in items):   # the model swapped in a block nobody asked for
-        print("dictation: OpenAI used a block type that wasn't requested; using the rules", flush=True)
+        print(f"dictation: {who} used a block type that wasn't requested; using the rules", flush=True)
         return None
     for k in range(len(items)):                  # roofs hold nothing; a multi-support needs real stacks
         if multi[k]:

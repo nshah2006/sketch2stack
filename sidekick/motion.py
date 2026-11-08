@@ -1,4 +1,5 @@
-"""Corrected moves, pick and place (handbook 2I, adapted for building).
+"""Corrected moves, pick and place (handbook 2I, adapted for building),
+plus the short acknowledgement gestures in gestures.py.
 
 Every move checks the abort signal. If the safety stop fires mid-move,
 the move waits until it's safe again and then repeats itself, so a pick or
@@ -6,6 +7,7 @@ place resumes where it left off instead of starting over.
 """
 import math
 
+from . import gestures
 from .catalog import fold180
 
 
@@ -154,3 +156,23 @@ class Motion:
 
     def home(self):
         return self._move(list(self.cfg["ready"]))
+
+    # ---------------------------------------------------------------- gestures
+    def carrying(self):
+        """True when the claw may have a block in it. Gestures must never risk
+        shaking one loose, so they refuse while this is true."""
+        held = self.arm.holding()
+        if held is not None:                       # force sensors fitted: they know
+            return held
+        open_, closed = self.cfg["claw_open"], self.cfg["claw_closed"]
+        return abs(self.claw - open_) > abs(closed - open_) / 2
+
+    def nod(self):
+        """-> "ok" | "busy" | "abort" (see gestures.run)"""
+        return gestures.nod(self)
+
+    def refuse(self):
+        return gestures.refuse(self)
+
+    def listen(self):
+        return gestures.listen(self)

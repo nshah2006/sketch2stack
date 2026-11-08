@@ -17,7 +17,7 @@ import math
 import cv2
 import numpy as np
 
-from . import dictation, planner, presets
+from . import dictation, planner, presets, repair as repair_mod
 
 UNIT = 3.0   # cm per app block unit (one cube)
 
@@ -167,7 +167,7 @@ def _cover(length, pieces, stock):
     return best[0]
 
 
-def tile(mask, cfg, catalog, style="closest", fit_strip=False):
+def tile(mask, cfg, catalog, style="closest", fit_strip=False, prefer=None):
     """Front-view mask -> design built from rows of 3 cm tall pieces, an arch
     over a doorway gap, and a roof on a pointed top."""
     crop, s = _fit(mask, cfg, fit_strip)
@@ -179,8 +179,13 @@ def tile(mask, cfg, catalog, style="closest", fit_strip=False):
     left = {tid: dict(t["colors"]) for tid, t in catalog.types.items()}
 
     def take(tid):
-        """Reserve one block of this type; -> the colour to ask the human for."""
+        """Reserve one block of this type; -> the colour to ask the human for.
+        A preferred colour wins while we still have some, then we fall back to
+        whichever pile is fullest."""
         pool = left.get(tid) or {}
+        if prefer and pool.get(prefer, 0) > 0:
+            pool[prefer] -= 1
+            return prefer
         best = max(pool, key=pool.get, default=None)
         if best is None or pool[best] <= 0:
             return next(iter(catalog.types[tid]["colors"]), "red")   # out of stock: name it anyway
@@ -307,7 +312,7 @@ def preset_mask(design, cfg, catalog):
     return m[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
 
 
-def generate(strokes, prompt, cfg, catalog, body=None, limit=4, fit_strip=False):
+def generate(strokes, prompt, cfg, catalog, body=None, limit=4, fit_strip=False, prefer=None):
     """Sketch -> up to `limit` buildable interpretations, best first.
 
     fit_strip False (default): the board is the strip, so what the user drew at
@@ -319,7 +324,7 @@ def generate(strokes, prompt, cfg, catalog, body=None, limit=4, fit_strip=False)
         for style, name, blurb in (
                 ("closest", "Closest to your sketch", "Rows of the longest pieces that fit your outline."),
                 ("simple", "Simple blocks", "Only cubes, cylinders and pillars; easiest for the arm.")):
-            d = _trim(tile(mask, cfg, catalog, style, fit_strip), cfg, catalog, body)
+            d = _trim(tile(mask, cfg, catalog, style, fit_strip, prefer), cfg, catalog, body)
             if d["blocks"] and not any(_same(d, o["_design"]) for o in out):
                 out.append({"_design": d, "name": name, "blurb": blurb, "source": "sketch",
                             "score": 1.0 if style == "closest" else 0.9})
@@ -367,7 +372,13 @@ def dictate(text, build, cfg, catalog, body=None):
     d = res["design"]
     if not d or not d["blocks"]:
         return {"reply": res["reply"], "builds": []}
-    kept = _trim(d, cfg, catalog, body)
+    # The user asked for this out loud, so it is worth a negotiation before we
+    # start deleting: the model gets the planner's complaints and one go at a
+    # fix (swap a colour we have, split a long block, lower a stack). One round
+    # only, because someone is waiting. It falls back to trimming from the top
+    # if the model is unreachable or unhelpful, so this never blocks a demo.
+    fixed = repair_mod.repair(d, cfg, catalog, body, rounds=1)
+    kept = fixed["design"]
     _, probs = planner.plan(d, cfg, catalog, body)
     why = next((p["msg"] for p in probs if p["level"] == "error"), "it doesn't fit")
     reply = res["reply"]
@@ -384,3 +395,61 @@ def dictate(text, build, cfg, catalog, body=None):
     bid = f"voice-{abs(hash(str(kept['blocks']))) % 10**6}"
     return {"reply": reply, "builds": [design_to_build(kept, cfg, catalog, bid, "From your request",
                                                        text.strip()[:80], "sketch", body)]}
+
+
+# ================================================================ live revision
+def _same_step(a, b):
+    """Two plan steps put the same block in the same place."""
+    return (a["type"] == b["type"] and int(a.get("pose", 0)) == int(b.get("pose", 0))
+            and abs(a["x"] - b["x"]) < 0.2 and abs(a["y"] - b["y"]) < 0.2
+            and abs(a["z"] - b["z"]) < 0.2)
+
+
+def revise_build(text, build, fixed, old_steps, cfg, catalog, body=None):
+    """Change a build that is already going up, from something the user said.
+
+    Only the blocks still to come are ours to change: the arm picks from a
+    supply zone and places, and has no way to take a block back off, so
+    anything already placed is a fact. -> {"ok", "reply", "steps"}.
+
+    `fixed` is how many steps are already committed (done, failed, or in the
+    claw right now) and `old_steps` is the plan they came from.
+    """
+    if not build or not build.get("blocks"):
+        return {"ok": False, "reply": "There is no build running to change.", "steps": None}
+    design = build_to_design(build)
+
+    def simpler(cur):
+        mask = preset_mask(cur, cfg, catalog)
+        return _trim(tile(mask, cfg, catalog, "simple", fit_strip=True),
+                     cfg, catalog, body) if mask is not None else None
+
+    res = dictation.parse(text, catalog, cfg, design, body, simpler)
+    d = res.get("design")
+    if not d or not d.get("blocks"):
+        return {"ok": False, "reply": res.get("reply") or "I didn't catch a change there.",
+                "steps": None}
+
+    steps, probs = planner.plan(d, cfg, catalog, body)
+    errs = [p["msg"] for p in probs if p["level"] == "error"]
+    if errs:
+        return {"ok": False, "reply": f"I can't do that: {errs[0]}", "steps": None}
+
+    # The blocks already standing must come out of the new plan unchanged, in
+    # the same order. If the change would have moved one of them, it is too late.
+    if len(steps) < fixed or any(not _same_step(steps[k], old_steps[k]) for k in range(fixed)):
+        return {"ok": False, "steps": None,
+                "reply": (f"Too late for that one: {fixed} block{'s are' if fixed != 1 else ' is'} "
+                          f"already placed and I can't take {'them' if fixed != 1 else 'it'} back off. "
+                          f"Ask me to change what's still to come.")}
+
+    left = len(steps) - fixed
+    if left == 0:
+        return {"ok": False, "reply": "That would leave nothing still to build.", "steps": None}
+    names = {}
+    for s in steps[fixed:]:
+        nm = catalog.types[s["type"]].get("name", s["type"]).lower()
+        names[nm] = names.get(nm, 0) + 1
+    what = ", ".join(f"{n} {k}" + ("s" if n > 1 else "") for k, n in names.items())
+    return {"ok": True, "steps": steps, "reply": f"Changing the rest to {what}.",
+            "remaining": left, "fixed": fixed}

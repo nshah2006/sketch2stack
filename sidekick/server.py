@@ -83,9 +83,14 @@ class App:
         # "fit": true scales the drawing up to fill the strip; the default reads
         # the board at its true size, so the board's ruler means something.
         fit_strip = bool(data.get("fit", False))
+        # "color": prefer this colour while stock lasts (the UI's colour picker)
+        prefer = data.get("color") or None
+        if prefer not in {c for t in self.catalog.types.values() for c in t["colors"]}:
+            prefer = None
         with self._gen_lock:          # one generation at a time; it's CPU heavy
             builds = webapi.generate(data.get("strokes", []), data.get("prompt", ""),
-                                     self.cfg, self.catalog, self.body, fit_strip=fit_strip)
+                                     self.cfg, self.catalog, self.body,
+                                     fit_strip=fit_strip, prefer=prefer)
         return {"request_id": data.get("request_id"), "builds": builds}
 
     def dictate(self, data):
@@ -93,6 +98,29 @@ class App:
             out = webapi.dictate(str(data.get("text", ""))[:300], data.get("build"),
                                  self.cfg, self.catalog, self.body)
         return {"request_id": data.get("request_id"), **out}
+
+    def revise(self, data):
+        """Change the blocks still to come on a running build, from speech.
+
+        Two steps on purpose: without "apply" this only reports what it would
+        do, so a stray sentence picked up by an open mic can never change a
+        build that is going up. Nothing here can touch the safety stop.
+        """
+        text = str(data.get("text", ""))[:300]
+        rb = self.run_build or {}
+        if not self.builder.busy():
+            return {"ok": False, "reply": "The arm isn't building right now.", "applied": False}
+        if data.get("run_id") is not None and data["run_id"] != rb.get("run_id"):
+            return {"ok": False, "reply": "That build has already finished.", "applied": False}
+        old_steps = list(self.builder.plan_steps)
+        fixed = self.builder.remaining()[1]
+        with self._gen_lock:
+            out = webapi.revise_build(text, rb.get("build"), fixed, old_steps,
+                                      self.cfg, self.catalog, self.body)
+        if not out["ok"] or not data.get("apply"):
+            return {**out, "applied": False}
+        ok, msg = self.builder.revise(out["steps"])
+        return {**out, "applied": bool(ok), "reply": out["reply"] if ok else msg}
 
     # ---------------------------------------------------------------- running
     def build(self, data):
@@ -253,6 +281,8 @@ def make_handler(app):
                 return self._send(200, app.generate(data))
             if path == "/api/dictate":
                 return self._send(200, app.dictate(data))
+            if path == "/api/revise":
+                return self._send(200, app.revise(data))
             if path == "/api/build":
                 ok, body = app.build(data)
                 return self._send(200 if ok else 409, body)

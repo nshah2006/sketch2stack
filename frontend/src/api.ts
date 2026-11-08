@@ -23,6 +23,18 @@ export type Status = {
 
 export type InventoryItem = { name: string; count: number; colors: Record<string, number>; shape: string }
 
+/** One block type as the robot knows it. `size` and every pose are real cm. */
+export type CatalogType = {
+  id: string
+  name: string
+  shape: string
+  size: [number, number, number]
+  top: boolean
+  colors: Record<string, number>
+  poses: { name: string; size: [number, number, number] }[]
+  count: number
+}
+
 export type Info = {
   server_id: string
   unit_cm: number
@@ -30,6 +42,7 @@ export type Info = {
   use_color: boolean
   grid: { width: number; depth: number; slots: number; max_height: number; depth_slot: number }
   inventory: Record<string, InventoryItem>
+  catalog: { max_grip: number; types: CatalogType[] }
 }
 
 export type Problem = { index: number | null; level: 'error' | 'warn'; msg: string }
@@ -78,14 +91,26 @@ export const api = {
   info: (signal?: AbortSignal) => call<Info>('/api/info', undefined, { signal, timeout: 30000 }),
   status: (signal?: AbortSignal) => call<Status>('/api/status', undefined, { signal, timeout: 4000 }),
   /** `fit` scales the sketch up to fill the build strip; omit it to read the board at true size. */
-  generate: (strokes: Stroke[], prompt: string, requestId: number, fit = false, signal?: AbortSignal) =>
-    call<{ request_id: number; builds: Build[] }>('/api/generate', { strokes, prompt, request_id: requestId, fit }, { signal, timeout: 60000 }),
+  generate: (strokes: Stroke[], prompt: string, requestId: number, fit = false,
+             color?: string | null, signal?: AbortSignal) =>
+    call<{ request_id: number; builds: Build[] }>(
+      '/api/generate', { strokes, prompt, request_id: requestId, fit, color: color ?? null },
+      { signal, timeout: 60000 }),
   dictate: (text: string, build: Build | null, requestId: number, signal?: AbortSignal) =>
     call<{ request_id: number; reply: string; builds: Build[] }>('/api/dictate', { text, build, request_id: requestId }, { signal, timeout: 30000 }),
-  check: (build: Build) => call<{ problems: Problem[]; stability: number }>('/api/check', { build }),
+  /** Validate a build: problems, score, and the height gravity settles each block to
+   *  (`z` is keyed by block index, in cm). */
+  check: (build: Build) =>
+    call<{ problems: Problem[]; stability: number; z: Record<string, number>; order: number[] }>(
+      '/api/check', { build }),
   build: (build: Build, owner?: string) =>
     call<{ ok: boolean; run_id: number; server_id: string; problems: Problem[] }>('/api/build', { build, owner }, { timeout: 30000 }),
   stop: (runId: number) => call<{ ok: boolean }>('/api/stop', { run_id: runId }),
+  /** Change the blocks still to come on a running build. Without `apply` this
+   *  only reports what it would do, so an open mic can't alter a live build. */
+  revise: (text: string, runId: number, apply = false) =>
+    call<{ ok: boolean; reply: string; applied: boolean; remaining?: number; fixed?: number }>(
+      '/api/revise', { text, run_id: runId, apply }, { timeout: 30000 }),
   pause: (runId: number) => call<{ ok: boolean }>('/api/pause', { run_id: runId }),
   resume: (runId: number) => call<{ ok: boolean }>('/api/resume', { run_id: runId }),
   simPoke: () => call<{ ok: boolean }>('/api/sim/poke', {}),

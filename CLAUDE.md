@@ -6,6 +6,7 @@ The first prototype (teach-by-showing: hand demo -> replay) lives in `legacy/` a
 
 ## Pipeline
 0. Main UI: `frontend/` (React + three.js): sketch -> `POST /api/generate` (`sidekick/webapi.py`) -> choose -> `POST /api/build` -> live status by `run_id`. Classic UI stays at `/classic`.
+   The sketch board has two modes (`BoardModeToggle`): **Draw** (freehand, the tiler guesses the blocks) and **Blocks** (`components/blocks/BlockEditor.tsx`, drag real catalog blocks onto the strip). Blocks mode skips the tiler entirely, so the layout is exact; it posts to `/api/check` on every edit for gravity heights, stability and problems, then hands the build straight to the Choose screen.
 1. Design: `sidekick/ui/index.html` front-view editor. Blocks drop by gravity; "push back" sets the depth slot. Or one of the presets in `sidekick/presets.py`. The 3D app's sketch board is the build strip 1:1 (true size), so the size drawn is the size built; `"fit": true` on `/api/generate` scales the drawing up to fill the strip instead.
 2. Plan: `planner.py` settles heights, checks support/roof/bounds/inventory/reach, orders bottom-up, back first, left to right, and picks the finger direction.
 3. Build: `builder.py` finds a matching loose block in a supply zone (or asks the user for one), `motion.py` picks it, turns the wrist, places it; the camera checks it.
