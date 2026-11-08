@@ -107,9 +107,14 @@ class Motion:
         x, y = blk["x"] + dx, blk["y"] + dy
         self.log(f"block seen at ({blk['x']:.1f}, {blk['y']:.1f}); reaching for ({x:.1f}, {y:.1f}) "
                  f"[pick_offset {dx:+.1f}, {dy:+.1f}]")
-        roll = self.roll_for(grip_axis, x, y)
         open_, closed = self.cfg["claw_open"], self.cfg["claw_closed"]
         hover = self.cfg.hover_z(z0, h)
+        if self.cfg.get("pick_track", True):
+            r = self._look_and_follow(blk, x, y, hover, grip_axis, open_)
+            if r[0] != "ok":
+                return r[0]
+            _, x, y, grip_axis = r
+        roll = self.roll_for(grip_axis, x, y)
         r = self.go_to(x, y, hover, claw=open_, roll=roll)
         if r != "ok":
             return r
@@ -151,6 +156,52 @@ class Motion:
             self.set_claw(open_)
             return "miss"
         return "ok"
+
+    # ---------------------------------------------------------------- live tracking
+    def _locate(self, blk, x, y, radius=10.0):
+        """Fresh camera fix on the block we're after: the nearest loose block of the
+        same kind within `radius` cm of where we last saw it (it may have been bumped)."""
+        best = None
+        for b in self.get_blocks():
+            if b.get("zone") == "build" or self.cfg.in_build(b["x"], b["y"]):
+                continue
+            if self.cfg["use_color"] and (b["color"] != blk.get("color") or b.get("type") != blk.get("type")):
+                continue
+            d = math.hypot(b["x"] - x, b["y"] - y)
+            if d <= radius and (best is None or d < best[0]):
+                best = (d, b)
+        return None if best is None else best[1]
+
+    def _look_and_follow(self, blk, x, y, hover, grip_axis, claw):
+        """Stop short of the block where the camera sees both it and the claw (right
+        above it, the claw hides it), take a fresh fix, and follow the block if it
+        moved. -> ("ok", x, y, grip_axis) | ("moved"|"unreachable"|"abort",)"""
+        stand = self.cfg.get("pick_look_cm", 7.0)
+        yaw = blk.get("yaw", 0.0)
+        dx, dy = self.cfg.get("pick_offset", [0.0, 0.0])      # fixes are raw camera positions
+        for look in range(3):
+            bx, by = self.cfg["layout"]["base"]
+            vx, vy = bx - x, by - y                        # stop short on the arm's side: links stay out of view
+            n = math.hypot(vx, vy) or 1.0
+            sx, sy = x + stand * vx / n, y + stand * vy / n
+            if not self.body.solve([sx, sy, hover])["reachable"]:
+                return ("ok", x, y, grip_axis)             # can't stand off here: go straight in
+            r = self.go_to(sx, sy, hover, claw=claw, roll=self.roll_for(grip_axis, x, y))
+            if r != "ok":
+                return (r,)
+            self.clock.sleep(self.cfg.get("pick_look_s", 0.6))   # a few fresh frames for the tracker
+            fix = self._locate(blk, x - dx, y - dy)
+            if fix is None:
+                self.log(f"lost the block near ({x - dx:.1f}, {y - dy:.1f}); looking again")
+                return ("moved",)
+            moved = math.hypot(fix["x"] + dx - x, fix["y"] + dy - y)
+            turn = fold180(fix.get("yaw", yaw) - yaw)
+            if moved <= 0.6 and abs(turn) <= 8:
+                return ("ok", x, y, grip_axis)
+            self.log(f"block moved {moved:.1f} cm, turned {turn:+.0f} deg; following it")
+            x, y, yaw = fix["x"] + dx, fix["y"] + dy, fix.get("yaw", yaw)
+            grip_axis = fold180(grip_axis + turn)
+        return ("ok", x, y, grip_axis)
 
     # ---------------------------------------------------------------- place
     def place(self, step, grip_axis_at_place):

@@ -42,6 +42,16 @@ def _write(path, data, binary=False):
     os.replace(tmp, path)
 
 
+def _count_log(log_dir, text, since):
+    """Lines containing `text` in builder logs written since `since` (wall time)."""
+    n = 0
+    for f in Path(log_dir).rglob("*.jsonl"):
+        if f.stat().st_mtime >= since:
+            with open(f) as fh:
+                n += sum(1 for line in fh if text in line)
+    return n
+
+
 def _score(world, steps):
     """-> (worst placement error cm, per-step errors). Colorless mode: match on type only."""
     worst, used, per = 0.0, set(), []
@@ -138,6 +148,7 @@ def worker(k, args, out):
     st["babble_s"] = round(time.time() - t0)
     w.clock.set_speed(args.speed)
     w.person.reach_rate = reach
+    w.bump_rate = args.bump
 
     # 2. build presets forever (or --episodes)
     ep = 0
@@ -147,7 +158,7 @@ def worker(k, args, out):
             w.clear_blocks()
             w.toppled.clear()
             w.person.requests.clear()
-        c0, s_virtual0, t_real0 = w.contacts, w.clock.time(), time.time()
+        c0, s_virtual0, t_real0, bumps0 = w.contacts, w.clock.time(), time.time(), w.bumps
         design = presets.get(pid)
         w.fill_supply(presets.needed(design)[:2])
         st.update(phase="build", episode=ep, preset=pid, safety_stops=0)
@@ -177,7 +188,8 @@ def worker(k, args, out):
              "worst_cm": None if worst is None else round(worst, 2), "step_err_cm": per,
              "blocks": [[bl.type, round(bl.x, 1), round(bl.y, 1), round(bl.z, 1)] for bl in w.blocks],
              "plan": [[st_["type"], round(st_["x"], 1), round(st_["y"], 1), round(st_["z"], 1)] for st_ in steps],
-             "toppled": len(w.toppled),
+             "toppled": len(w.toppled), "bumps": w.bumps - bumps0,
+             "follows": _count_log(out / f"log_{k}", "following it", t_real0),
              "contacts": w.contacts - c0, "safety_stops": st["safety_stops"],
              "virtual_s": round(w.clock.time() - s_virtual0, 1), "real_s": round(time.time() - t_real0, 1),
              "body_cm": st["body_cm"]}
@@ -268,6 +280,8 @@ def main(argv=None):
     ap.add_argument("--fresh", action="store_true", help="re-babble even if samples exist")
     ap.add_argument("--record", action="store_true", help="save every build as a demo episode (camera, state, action)")
     ap.add_argument("--record-hz", type=float, default=10.0)
+    ap.add_argument("--bump", type=float, default=0.0,
+                    help="chance the person bumps a block the claw is about to pick (tests live tracking)")
     ap.add_argument("--pickup", default="35,30",
                     help="x,y of the pickup spot in cm ('' = config). The default left-back corner is at "
                          "the edge of accurate reach for some flawed arms; the right side is solid for all")

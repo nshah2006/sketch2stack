@@ -84,6 +84,9 @@ class TwinWorld(World):
         self.toppled = set()                  # ids of blocks that are no longer upright
         self.frames_rendered = 0
         self._rec = None                      # demo recording (fleet.py -> LeRobot dataset)
+        self.bump_rate = 0.0                  # chance the person bumps a block the claw is coming for
+        self.bumps = 0
+        self._bump_checked = {}               # block id -> trigger distance (cm), or None once decided
         # building the scene takes a moment: restart time so the world doesn't
         # start out seconds behind its clock (the arm would miss its handshake)
         self.clock = SimClock(self.clock.speed)
@@ -282,6 +285,8 @@ class TwinWorld(World):
                     self._set_collide(k, False)
                     self._place(k, b, fz)
         self._pose_arm(pose)
+        if self.bump_rate:
+            self._maybe_bump(fx, fy, fz)
         for _ in range(SUB):
             mujoco.mj_step(m, d)
             for b in self.blocks:              # held blocks ride with the claw, unparked slots stay put
@@ -303,6 +308,36 @@ class TwinWorld(World):
                 self.toppled.add(b.id)
             else:
                 self.toppled.discard(b.id)
+
+    def _maybe_bump(self, fx, fy, fz):
+        """Once per loose block, when the claw first comes within a random 5-12 cm of
+        it from above, the person may bump it 2.5-4 cm and twist it a little."""
+        for b in self.blocks:
+            if b.held or self.cfg.in_build(b.x, b.y) or b.id in self.toppled:
+                continue
+            trig = self._bump_checked.setdefault(b.id, float(self.rng.uniform(5, 12)))
+            if trig is None or math.hypot(b.x - fx, b.y - fy) > trig or fz < b.z + b.h + 1.5:
+                continue
+            self._bump_checked[b.id] = None
+            if self.rng.random() >= self.bump_rate:
+                continue
+            for _ in range(10):
+                a = self.rng.uniform(0, 2 * math.pi)
+                r = self.rng.uniform(2.5, 4.0)
+                nx, ny = b.x + r * math.cos(a), b.y + r * math.sin(a)
+                if self.cfg.in_build(nx, ny, 2.0) or not self.cfg.in_work_area(nx, ny):
+                    continue
+                if any(o is not b and math.hypot(o.x - nx, o.y - ny) < 4.5 for o in self.blocks):
+                    continue
+                if math.hypot(nx - fx, ny - fy) < 3.0:
+                    continue                   # not into the claw
+                b.x, b.y = float(nx), float(ny)
+                b.yaw = float(((b.yaw + self.rng.uniform(-25, 25)) + 90) % 180 - 90)
+                k = self._slot_of.get(b.id)
+                if k is not None:
+                    self._place(k, b, b.z + b.h / 2)
+                self.bumps += 1
+                break
 
     def _pose_arm(self, pose):
         m, d, mc = self.m, self.d, self._mocap
