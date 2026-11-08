@@ -161,6 +161,7 @@ class Builder:
                 with self.lock:
                     self.status["safety"] = True
                 self.log("SAFETY STOP: hand near the claw")
+                self._make_room(claw)
                 if self.cfg["leds"] or self.cfg["use_sim"]:
                     self.arm.led(LED["stopped"])
         elif self.safety_stopped:
@@ -212,6 +213,23 @@ class Builder:
             self.log(f"pointed at ({x:.1f}, {y:.1f})", x=round(x, 1), y=round(y, 1))
 
     # ================================================================ helpers for motion
+    def _make_room(self, claw):
+        """Optional (yield_lift_cm > 0): after freezing for a hand near the low claw,
+        also lift the claw straight up, away from the hand. The interrupted move is
+        sent again once the hand has gone, so the task carries on."""
+        lift = float(self.cfg.get("yield_lift_cm", 0.0))
+        if lift <= 0 or claw is None:
+            return
+        try:
+            cur = list(self.arm.targets)
+            x, y, z = (float(v) for v in self.body.forward(cur[:4])[0][:3])
+            s = self.body.solve([x, y, z + lift])
+            if s["reachable"]:
+                self.arm.send_targets(list(s["pulses"]) + cur[4:6])
+                self.log(f"making room: lifting {lift:.0f} cm")
+        except Exception as e:
+            self.log(f"making room skipped: {e!r}")
+
     def _obstacles(self):
         """What the claw must not sweep through: blocks built so far (known heights)
         and loose blocks the camera sees (unknown kind: assume the tallest)."""

@@ -42,6 +42,26 @@ def _write(path, data, binary=False):
     os.replace(tmp, path)
 
 
+# Round loss: how far one build ("round") is from its schematic, plus what it cost
+# the person. Lower is better; a perfect, quick, polite round scores about 0.3.
+LOSS_W = {"placement": 1.0, "missing": 1.0, "unfinished": 2.0, "toppled": 1.0, "contact": 3.0,
+          "safety_stop": 0.05, "time": 0.002}
+
+
+def round_loss(r):
+    """-> (total, parts). Placement: each planned block's error, capped at 3 cm, as
+    a fraction of 3 cm; a block not found at all counts as missing."""
+    errs = r.get("step_err_cm") or []
+    n = max(1, len(errs))
+    place = sum(min(e, 3.0) / 3.0 for e in errs if e is not None) / n
+    missing = sum(1 for e in errs if e is None) / n
+    parts = {"placement": place, "missing": missing, "unfinished": 0.0 if r.get("result") == "done" else 1.0,
+             "toppled": float(r.get("toppled") or 0), "contact": float(r.get("contacts") or 0),
+             "safety_stop": float(r.get("safety_stops") or 0), "time": float(r.get("virtual_s") or 0)}
+    total = sum(LOSS_W[k] * v for k, v in parts.items())
+    return round(total, 3), {k: round(LOSS_W[k] * v, 3) for k, v in parts.items()}
+
+
 def _count_log(log_dir, text, since):
     """Lines containing `text` in builder logs written since `since` (wall time)."""
     n = 0
@@ -100,6 +120,8 @@ def worker(k, args, out):
     seed = args.seed + k
     reach = REACH_RATES[k % len(REACH_RATES)]
     cfg = C.load(overrides={"use_sim": True})
+    sets = json.loads(Path(args.params).read_text()) if args.params else []
+    base = {key: cfg.get(key) for st_ in sets for key in st_}
     if args.pickup:
         cfg["layout"]["pickup"] = [float(v) for v in args.pickup.split(",")]
     cat = Catalog.load()
@@ -154,6 +176,12 @@ def worker(k, args, out):
     ep = 0
     while args.episodes <= 0 or ep < args.episodes:
         pid = PRESET_IDS[(k + ep) % len(PRESET_IDS)]
+        params, pid_ = {}, None
+        if sets:                             # parameter search: every twin cycles through every setting
+            pid_ = (k + ep) % len(sets)
+            params = sets[pid_]
+            cfg.update(base)
+            cfg.update(params)
         with w.lock:
             w.clear_blocks()
             w.toppled.clear()
@@ -193,6 +221,8 @@ def worker(k, args, out):
              "contacts": w.contacts - c0, "safety_stops": st["safety_stops"],
              "virtual_s": round(w.clock.time() - s_virtual0, 1), "real_s": round(time.time() - t_real0, 1),
              "body_cm": st["body_cm"]}
+        r["param_id"], r["params"] = pid_, params
+        r["loss"], r["loss_parts"] = round_loss(r)
         rec = w.stop_recording() if args.record else None
         if rec and rec["frames"]:
             import numpy as np
@@ -206,7 +236,8 @@ def worker(k, args, out):
         with open(out / "results.jsonl", "a") as f:
             f.write(json.dumps(r) + "\n")
         st["results"] = (st["results"] + [{"preset": pid, "result": result, "worst_cm": r["worst_cm"],
-                                           "toppled": r["toppled"]}])[-6:]
+                                           "toppled": r["toppled"], "loss": r["loss"]}])[-6:]
+        st["param_id"] = pid_
         st["phase"] = "pause"
         time.sleep(1.0)
         ep += 1
@@ -239,7 +270,7 @@ async function tick(){let done=0,total=0,stops=0,top=0;
   document.getElementById('h'+k).textContent=`Twin ${k} · ${s.preset||'—'}`;
   document.getElementById('p'+k).innerHTML=`${s.phase} · ep ${s.episode} · reach ${s.reach_rate}/s · gpu ${s.gpu}`;
   document.getElementById('a'+k).innerHTML=(s.safety?'<span class="safe">SAFETY STOP · </span>':'')+(s.phase==='build'?`step ${s.step}/${s.total} · ${s.action||s.mode||''}`:(s.phase==='babble'?'learning its body through the camera…':''))+(s.body_cm!=null?` · body ${s.body_cm} cm`:'');
-  document.getElementById('r'+k).innerHTML=(s.results||[]).map(r=>`<span class="${cls(r.result)}">${r.preset}: ${r.result}${r.worst_cm!=null?' '+(r.worst_cm*10).toFixed(0)+'mm':''}${r.toppled?' ⤵'+r.toppled:''}</span>`).join('');
+  document.getElementById('r'+k).innerHTML=(s.results||[]).map(r=>`<span class="${cls(r.result)}" title="round loss ${r.loss}">${r.preset}: ${r.result}${r.worst_cm!=null?' '+(r.worst_cm*10).toFixed(0)+'mm':''}${r.toppled?' ⤵'+r.toppled:''}${r.loss!=null?' · loss '+r.loss.toFixed(2):''}</span>`).join('');
   for(const r of s.results||[]){total++;if(r.result==='done')done++;if(r.toppled)top++}stops+=s.safety_stops||0;
  }catch(e){}}
  document.getElementById('sum').innerHTML=`builds (last 6 each): <b>${done}/${total}</b> done · <b>${top}</b> with toppled blocks · safety stops now: <b>${stops}</b>`;
@@ -280,6 +311,7 @@ def main(argv=None):
     ap.add_argument("--fresh", action="store_true", help="re-babble even if samples exist")
     ap.add_argument("--record", action="store_true", help="save every build as a demo episode (camera, state, action)")
     ap.add_argument("--record-hz", type=float, default=10.0)
+    ap.add_argument("--params", default="", help="JSON list of config overrides; each round uses the next one")
     ap.add_argument("--bump", type=float, default=0.0,
                     help="chance the person bumps a block the claw is about to pick (tests live tracking)")
     ap.add_argument("--pickup", default="35,30",
