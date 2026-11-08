@@ -21,15 +21,26 @@ class Observation:
     claw_px: tuple = None
 
 
-def claw_tip(claw, marker_to_fingertip):
+def claw_tip(claw, marker_to_fingertip, forward=0.0, base=None):
     """Fingertip position from a claw-marker reading. The marker faces away from
     the fingers, so the tips sit marker_to_fingertip cm behind its face normal.
+    forward: how far the marker sits out in front of the tips (cm), measured
+    away from the arm's base (a marker card that sticks out past the wrist).
     Works even when the claw isn't pointing straight down."""
     if claw is None:
         return None
     nx, ny, nz = claw.get("nx", 0.0), claw.get("ny", 0.0), claw["down"]
     k = marker_to_fingertip
-    return {"x": claw["x"] - k * nx, "y": claw["y"] - k * ny, "z": claw["z"] - k * nz, "down": nz}
+    x, y, z = claw["x"] - k * nx, claw["y"] - k * ny, claw["z"] - k * nz
+    if forward and base is not None:
+        r = np.array([claw["x"] - base[0], claw["y"] - base[1], 0.0])
+        n = np.array([nx, ny, nz])
+        f = r - np.dot(r, n) * n                 # outward direction, in the marker's plane
+        norm = np.linalg.norm(f)
+        if norm > 1e-6 and np.linalg.norm(r) > 3.0:
+            f /= norm
+            x, y, z = x - forward * f[0], y - forward * f[1], z - forward * f[2]
+    return {"x": float(x), "y": float(y), "z": float(z), "down": nz}
 
 
 # ===================================================================== blocks (real images)

@@ -27,7 +27,7 @@ torch.set_num_threads(1)
 
 
 # ===================================================================== reading the claw
-def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0):
+def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0, forward=0.0, base=None):
     """Average n claw readings from an observation source (sim world or real vision).
     Returns the fingertip {x, y, z, down} or None if the marker was not seen."""
     got = []
@@ -50,7 +50,7 @@ def read_claw(source, n=5, timeout=1.5, marker_to_fingertip=9.0):
     if len(got) < max(2, n // 2):
         return None
     avg = {k: float(np.mean([g.get(k, 0.0) for g in got])) for k in ("x", "y", "z", "nx", "ny", "down")}
-    return claw_tip(avg, marker_to_fingertip)
+    return claw_tip(avg, marker_to_fingertip, forward, base)
 
 
 # ===================================================================== babbling
@@ -84,7 +84,8 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
             cur[4], cur[5] = 1500, cfg["claw_open"]
             arm.move(cur)
             clock.sleep(cfg["babble_settle"])
-            m = read_claw(source, 5, marker_to_fingertip=cfg["marker_to_fingertip"])
+            m = read_claw(source, 5, marker_to_fingertip=cfg["marker_to_fingertip"],
+                          forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"])
             if m is None:
                 unseen += 1
                 last_z = None

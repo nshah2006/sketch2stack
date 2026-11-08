@@ -58,6 +58,7 @@ DEFAULTS = {
     "table_marker_size": 5.0,
     "claw_marker_size": 3.0,
     "marker_to_fingertip": 9.0,
+    "marker_forward": 0.0,         # cm the claw marker sits out in front of the tips (away from the base)
     "hover_extra": 6.0,
     "hand_height": 5.0,
     "chessboard_inner": [9, 6],

@@ -181,7 +181,8 @@ class Builder:
                 return None
             recent = list(self.claw_hist)[-got:]
         avg = {k: sum(c.get(k, 0.0) for c in recent) / len(recent) for k in ("x", "y", "z", "nx", "ny", "down")}
-        return claw_tip(avg, self.cfg["marker_to_fingertip"])
+        return claw_tip(avg, self.cfg["marker_to_fingertip"], self.cfg.get("marker_forward", 0.0),
+                        self.cfg["layout"]["base"])
 
     def wait_resume(self):
         """Called by motion while the safety stop or a user pause is active."""
