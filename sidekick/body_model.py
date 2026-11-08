@@ -93,7 +93,7 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
             cur[4], cur[5] = 1500, cfg["claw_open"]
             arm.move(cur)
             clock.sleep(cfg["babble_settle"])
-            actual = arm.read() if hasattr(arm, "read") else None   # bus servos report where they really are
+            actual = arm.read_stable() if hasattr(arm, "read_stable") else None   # bus servos report where they really are
             if actual is not None and all(a is not None for a in actual[:4]):
                 off = max(abs(a - c) for a, c in zip(actual[:4], cur[:4]))
                 if off > 120:                          # blocked (touching something) or a servo shut off

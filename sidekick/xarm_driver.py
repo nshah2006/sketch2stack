@@ -86,6 +86,21 @@ class XArm:
         self.reports += 1
         return out
 
+    def read_stable(self, tries=8, tol=20):
+        """Two back-to-back full readings that agree (the USB link sometimes returns a
+        stale or shifted answer). None if it can't get a clean pair."""
+        prev = None
+        for _ in range(tries):
+            now = self.read()
+            if all(v is not None for v in now):
+                if prev is not None and all(abs(a - b) <= tol for a, b in zip(now, prev)):
+                    return now
+                prev = now
+            else:
+                prev = None
+            self.clock.sleep(0.1)
+        return None
+
     # ------------------------------------------------------------ moves
     def clamp(self, pulses):
         lo, hi = self.cfg["joint_min"], self.cfg["joint_max"]
@@ -107,9 +122,10 @@ class XArm:
 
     def start(self, pose=None):
         """Don't jump anywhere: take the current position as the target."""
-        now = self.read()
-        if any(p is None for p in now):
-            raise ArmError(f"Some servos didn't answer: {now}. Check the daisy-chain cables.")
+        now = self.read_stable()
+        if now is None:
+            raise ArmError("Couldn't get a clean position reading from the servos. Power-cycle the arm, "
+                           "replug the USB, and check the daisy-chain cables.")
         self.targets = now
         if self.verbose:
             print("xArm connected. Joints now:", now)
