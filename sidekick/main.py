@@ -695,8 +695,9 @@ def cmd_touch(cfg, a):
                     if m is None:
                         print("  claw marker not seen; not saved (keep hands out of view)")
                         continue
-                    pulses = arm.read()[:4] if hasattr(arm, "read") else list(arm.targets[:4])
-                    if any(v is None for v in pulses):
+                    pulses = arm.read_stable() if hasattr(arm, "read_stable") else None
+                    pulses = pulses[:4] if pulses else None
+                    if pulses is None:
                         pulses = list(arm.targets[:4])
                     with open(out, "a") as f:
                         f.write(_json.dumps({"p": pulses, "x": m["x"], "y": m["y"], "z": m["z"]}) + "\n")
