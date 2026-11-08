@@ -737,6 +737,18 @@ def cmd_touch(cfg, a):
         st.close()
 
 
+def _tip_from_px(calib, cfg, u, v, h, base):
+    hit = calib.pixel_to_table(u, v, z=h + cfg["marker_to_fingertip"])
+    if hit is None:
+        return None
+    x, y = hit
+    fwd = cfg.get("marker_forward", 0.0)
+    r = math.hypot(x - base[0], y - base[1])
+    if fwd and r > 3.0:
+        x, y = x - fwd * (x - base[0]) / r, y - fwd * (y - base[1]) / r
+    return float(x), float(y)
+
+
 def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0):
     """Fingertip x, y for a touch point. With the claw pointing straight down the
     marker centre sits marker_to_fingertip above the tips, so its pixel ray is cut
@@ -751,16 +763,10 @@ def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0):
     if len(px) < max(2, n // 2) or calib is None:
         return None
     u, v = np.median(np.array(px, float), axis=0)
-    hit = calib.pixel_to_table(u, v, z=h + cfg["marker_to_fingertip"])
+    hit = _tip_from_px(calib, cfg, u, v, h, cfg["layout"]["base"])
     if hit is None:
         return None
-    x, y = hit
-    base = cfg["layout"]["base"]
-    fwd = cfg.get("marker_forward", 0.0)
-    r = math.hypot(x - base[0], y - base[1])
-    if fwd and r > 3.0:
-        x, y = x - fwd * (x - base[0]) / r, y - fwd * (y - base[1]) / r
-    return {"x": float(x), "y": float(y), "px": [float(u), float(v)]}
+    return {"x": hit[0], "y": hit[1], "px": [float(u), float(v)]}
 
 
 def _fit_arm(cfg):
@@ -769,7 +775,21 @@ def _fit_arm(cfg):
     if len(pts) < 4:
         print(f"  need at least 4 touch points (have {len(pts)})")
         return None
-    body, rms, worst, each = fit(default_params(cfg, _lengths(cfg)), pts, cfg["joint_min"], cfg["joint_max"])
+    params = default_params(cfg, _lengths(cfg))
+    calib = None
+    if any("px" in q for q in pts):
+        from .calibration import Calibration
+        calib = Calibration.load()
+    for _ in range(3 if calib else 1):
+        if calib:      # the marker offset points away from the base: redo the tips with the fitted base
+            for q in pts:
+                if "px" in q:
+                    hit = _tip_from_px(calib, cfg, q["px"][0], q["px"][1], q.get("h", 0.0),
+                                       (params["bx"], params["by"]))
+                    if hit:
+                        q["x"], q["y"] = hit
+        body, rms, worst, each = fit(params, pts, cfg["joint_min"], cfg["joint_max"])
+        params = dict(params, bx=body.p["bx"], by=body.p["by"])
     body.save()
     p = body.p
     for i, (q, d) in enumerate(zip(pts, each)):
