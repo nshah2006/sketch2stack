@@ -208,7 +208,8 @@ def layout(items, conns, catalog, stock, sup_given=None, beside=None, max_width=
                 break
             got.append(c)
         if len(got) < it["n"]:
-            what = f"{it['color']} {name}s" if it["color"] else f"{name}s"
+            pl = name + ("es" if name.endswith(("ch", "s", "x")) else "s")
+            what = f"{it['color']} {pl}" if it["color"] else pl
             have = sorted(stock.colors(it["tid"]))
             hint = f" ({name} comes in {', '.join(have)})" if not got and it["color"] and it["color"] not in have else ""
             notes.append(f"I only have {len(got)} {what} for that" if got else f"I have no {what} left{hint}")

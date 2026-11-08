@@ -17,6 +17,7 @@ import copy
 import json
 
 from . import config as C
+from . import inventory_db
 
 DEFAULT_CATALOG = {
     "max_grip": 5.0,        # widest side the claw can close across, cm (about 70% of its opening)
@@ -61,8 +62,15 @@ class Catalog:
         p = C.path("config", data_dir).parent / "blocks.json"
         if p.exists():
             with open(p) as f:
-                return cls(json.load(f))
-        return cls(copy.deepcopy(DEFAULT_CATALOG))
+                data = json.load(f)
+        else:
+            data = copy.deepcopy(DEFAULT_CATALOG)
+        db = inventory_db.fetch_counts()          # counts only; sizes and shapes stay as above
+        if db:
+            for t in data["types"]:
+                if t["id"] in db:
+                    t["colors"] = dict(db[t["id"]])
+        return cls(data)
 
     def save(self, data_dir=None):
         p = C.path("config", data_dir).parent / "blocks.json"

@@ -148,7 +148,7 @@ def test_planner(cfg):
     _, probs = validate({"blocks": [{"type": "bar", "color": "green", "x": 15, "z_hint": 0}]}, cfg, cat)
     checks["out of strip"] = any("sticks out" in p["msg"] for p in probs)
     _, probs = validate({"blocks": [{"type": "cube", "color": "red", "x": 3 * i, "z_hint": 0}
-                                    for i in range(3)]}, cfg, cat)
+                                    for i in range(cat.count("cube") + 1)]}, cfg, cat)   # one more than owned
     checks["inventory"] = any("owned" in p["msg"] for p in probs)
     steps, _ = plan(presets.get("gate"), cfg, cat)
     checks["bottom first"] = [s["z"] for s in steps] == sorted(s["z"] for s in steps)
@@ -289,7 +289,7 @@ def test_dictation(cfg):
     house = len(b2) == 3 and sum(x["type"] == "roof" for x in b2) == 1
     _, b3 = ask("make a house")
     preset = len(b3) == 3 and b3[0]["color"] == "red"
-    r4, b4 = ask("three blue cubes")             # no blue cubes in the catalog: refuse, don't invent
+    r4, b4 = ask("three purple cubes")           # no purple cubes in the catalog: refuse, don't invent
     r5, b5 = ask("make it taller", r["builds"][0])
     edit = len(b5) > len(b1) or "taller" in r5["reply"].lower()
     cap = all(sum(1 for x in b if x["color"] == "natural" and x["type"] == "cube") <= 10 for b in (b1, b2, b3, b4, b5))
@@ -333,6 +333,8 @@ def test_speech(cfg):
 
 
 def run(cfg, quick=False):
+    import os
+    os.environ["SIDEKICK_NO_DB"] = "1"            # tests use the local catalog, not the network
     cfg = C.load(overrides={"use_sim": True})
     print("Sidekick self-test (no hardware)\n", flush=True)
     results = [test_calibration(cfg), test_markers(cfg), test_firmware(cfg), test_planner(cfg),
@@ -350,6 +352,8 @@ def run(cfg, quick=False):
 def simtest(cfg, runs=3):
     """Phase 2S: randomization test and repeated preset builds with a person reaching in."""
     from . import presets
+    import os
+    os.environ["SIDEKICK_NO_DB"] = "1"
     cfg = C.load(overrides={"use_sim": True})
     print("Simulator test suite\n", flush=True)
     ok_all = True
