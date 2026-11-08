@@ -615,6 +615,9 @@ def cmd_simtest(cfg, a):
     sys.exit(0 if simtest(cfg, runs=a.n or 3) else 1)
 
 
+from .perception import arm_heading   # noqa: E402
+
+
 def cmd_claw(cfg, a):
     """Print where the camera thinks the fingertips are, twice a second (no arm moves).
     `claw --zero`: with the claw pointing straight down and its tips touching the
@@ -631,6 +634,7 @@ def cmd_claw(cfg, a):
             n = np.array([m["nx"], m["ny"], m["down"]])
             n = n / np.linalg.norm(n)
             cfg["claw_normal_bias"] = [round(float(v), 4) for v in n]
+            cfg["claw_normal_bias"].append(round(arm_heading(m["x"], m["y"], cfg["layout"]["base"]), 2))
             cfg["marker_to_fingertip"] = round(float(m["z"]), 2)     # tips on the paper: z = 0
             C.save(cfg)
             print(f"saved: claw_normal_bias {cfg['claw_normal_bias']} (tilt it measured: "
@@ -710,6 +714,7 @@ def cmd_touch(cfg, a):
                     nv = np.array([raw["nx"], raw["ny"], raw["down"]])
                     nv = nv / np.linalg.norm(nv)
                     cfg["claw_normal_bias"] = [round(float(v), 4) for v in nv]
+                    cfg["claw_normal_bias"].append(round(arm_heading(raw["x"], raw["y"], cfg["layout"]["base"]), 2))
                     cfg["marker_to_fingertip"] = round(float(raw["z"]), 2)
                     C.save(cfg)
                     print(f"  zeroed: marker tilt bias {np.degrees(np.arccos(min(1.0, nv[2]))):.0f} deg, "
