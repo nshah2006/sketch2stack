@@ -21,6 +21,11 @@ class Observation:
     claw_px: tuple = None
 
 
+def arm_heading(x, y, base):
+    """Turntable heading (deg) of a point, as seen from the arm's base."""
+    return math.degrees(math.atan2(x - base[0], -(y - base[1])))
+
+
 def unbias_normal(n, bias):
     """Rotate a measured marker normal by the fixed rotation that takes `bias`
     (the normal measured with the claw truly vertical) to straight up."""
@@ -47,6 +52,13 @@ def claw_tip(claw, marker_to_fingertip, forward=0.0, base=None, bias=None):
     Works even when the claw isn't pointing straight down."""
     if claw is None:
         return None
+    if bias is not None and len(bias) == 4 and base is not None:
+        # the tilt bias turns with the arm: rotate it from the heading it was measured at
+        d = math.radians(arm_heading(claw["x"], claw["y"], base) - bias[3])
+        bx, by, bz = bias[:3]
+        bias = [bx * math.cos(d) - by * math.sin(d), bx * math.sin(d) + by * math.cos(d), bz]
+    elif bias is not None and len(bias) == 4:
+        bias = bias[:3]
     nx, ny, nz = unbias_normal([claw.get("nx", 0.0), claw.get("ny", 0.0), claw["down"]], bias)
     k = marker_to_fingertip
     x, y, z = claw["x"] - k * nx, claw["y"] - k * ny, claw["z"] - k * nz
