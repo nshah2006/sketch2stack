@@ -5,7 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sidekick Twin</title>
 <style>
-  :root { --bg: #f5f5f3; --card: #fff; --ink: #222; --mute: #777; --line: #ddd; --accent: #2f7d4f; --stop: #c0392b; }
+  :root { --bg: #f5f5f3; --card: #fff; --ink: #222; --mute: #777; --line: #ddd; --accent: #2f7d4f; --stop: #c0392b;
+          --table: #fbfbf8; --zone: #e9eef5; --strip: #e6f2e9; --target: #d4148c; --hand: #e67e22; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #16181b; --card: #212429; --ink: #e8e8e6; --mute: #9a9ea5; --line: #3a3e45;
+      --table: #2a2d33; --zone: #2c3442; --strip: #233a2b; --target: #ff4fb4; --hand: #f39c3d; }
+  }
+  :root[data-theme="dark"] { --bg: #16181b; --card: #212429; --ink: #e8e8e6; --mute: #9a9ea5; --line: #3a3e45;
+    --table: #2a2d33; --zone: #2c3442; --strip: #233a2b; --target: #ff4fb4; --hand: #f39c3d; }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 15px/1.4 system-ui, sans-serif; }
   h1 { font-size: 18px; margin: 0 0 12px; }
@@ -14,8 +21,13 @@
   .views img { width: 100%; display: block; border-radius: 4px; background: #ccc; min-height: 120px; }
   figcaption { color: var(--mute); font-size: 12px; padding-top: 4px; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
-  input[type=text] { flex: 1 1 260px; padding: 9px 10px; font-size: 15px; border: 1px solid var(--line); border-radius: 6px; }
-  button { padding: 9px 14px; font-size: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); cursor: pointer; }
+  input[type=text] { flex: 1 1 200px; min-width: 0; padding: 9px 10px; font-size: 15px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }
+  button { padding: 9px 14px; font-size: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); cursor: pointer; }
+  .views canvas { width: 100%; display: block; border-radius: 4px; }
+  #phase { font-weight: 600; padding: 2px 0 4px; }
+  #phase.warn { color: var(--stop); }
+  .legend { color: var(--mute); font-size: 12px; }
+  .row .label { color: var(--mute); font-size: 13px; }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   button.stop { background: var(--stop); color: #fff; border-color: var(--stop); }
   button.live { background: #e67e22; color: #fff; }
@@ -29,6 +41,32 @@
 <div class="views">
   <figure><img id="view" alt="3D view of the twin"><figcaption>3D view (MuJoCo)</figcaption></figure>
   <figure><img id="frame" alt="Overhead camera with overlay"><figcaption>Overhead camera + what perception sees</figcaption></figure>
+  <figure>
+    <div id="phase">map: connecting...</div>
+    <canvas id="map" width="600" height="480" aria-label="Digital map: top-down view of what the arm knows"></canvas>
+    <canvas id="front" width="600" height="150" aria-label="Plan seen from the front, layer by layer"></canvas>
+    <figcaption>Digital map (top down, you at the bottom) and the plan from the front.
+      <span class="legend">Dashed = planned, filled = done, thick = now. Pink arrow = where the claw is going.</span></figcaption>
+  </figure>
+</div>
+
+<div class="row">
+  <span class="label">Arm:</span>
+  <button class="stop" data-cmd="freeze">Freeze</button>
+  <button class="primary" data-cmd="go on">Go on</button>
+  <button data-cmd="back off">Back off</button>
+  <button data-cmd="move up">Up</button>
+  <button data-cmd="move down">Down</button>
+</div>
+<div class="row">
+  <span class="label">Feel:</span>
+  <button data-cmd="nod">Yes</button>
+  <button data-cmd="shake your head">No</button>
+  <button data-cmd="look happy">Happy</button>
+  <button data-cmd="look sad">Sad</button>
+  <button data-cmd="look confused">Confused</button>
+  <button data-cmd="wave">Wave</button>
+  <button data-cmd="look at me">Look at me</button>
 </div>
 
 <div class="row">
@@ -58,14 +96,19 @@ async function command(text) {
   if (!text) return;
   $('reply').textContent = '...';
   try {
-    const r = await post('/api/command', { text });
-    $('reply').textContent = (r.reply || r.error || '') + (r.intent ? '  [' + r.intent.intent + ']' : '');
+    const r = await post('/api/chat', { text });
+    $('reply').textContent = (r.reply || r.error || '') + (r.emotion ? '  (' + r.emotion + ')' : '')
+      + (r.source ? '  [' + r.source + ']' : '');
+    if (r.reply && window.speechSynthesis) {            // say it out loud too
+      try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(r.reply)); } catch (e) {}
+    }
   } catch (e) { $('reply').textContent = 'error: ' + e; }
 }
 
 $('send').onclick = () => { command($('cmd').value); $('cmd').value = ''; };
 $('cmd').onkeydown = e => { if (e.key === 'Enter') $('send').onclick(); };
 $('stopbtn').onclick = () => command('stop');
+for (const b of document.querySelectorAll('button[data-cmd]')) b.onclick = () => command(b.dataset.cmd);
 
 // browser speech recognition (Chrome/Edge); falls back to typing
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -117,7 +160,160 @@ async function refreshStatus() {
   } catch (e) { $('mode').textContent = 'server unreachable'; }
 }
 
+// ---------------------------------------------------------------- digital map
+const COLORS = { red: '#d63c3c', orange: '#e8862a', green: '#3a9d4f', blue: '#3b6fd6', yellow: '#e6c229',
+  purple: '#8a4fc7', natural: '#c9a36b', white: '#f0f0f0', pink: '#e87aa8' };
+const colorOf = c => COLORS[c] || '#999';
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function fitCanvas(cv, aspect) {
+  const w = Math.max(200, Math.round(cv.clientWidth * (window.devicePixelRatio || 1)));
+  const h = Math.round(w * aspect);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  return [w, h];
+}
+
+function drawMap(m) {
+  const cv = $('map'), ctx = cv.getContext('2d');
+  const [tw, th] = m.table;
+  const X0 = -3, X1 = tw + 3, Y0 = -8, Y1 = Math.max(th, m.base[1]) + 4;     // cm shown
+  const [W, H] = fitCanvas(cv, (Y1 - Y0) / (X1 - X0));
+  const k = W / (X1 - X0);
+  const px = x => (x - X0) * k, py = y => H - (y - Y0) * k;               // human side at the bottom
+  const ink = css('--ink'), mute = css('--mute'), line = css('--line'), tgt = css('--target');
+  const font = Math.max(10, Math.round(k * 1.1));
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = css('--card'); ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = css('--table'); ctx.fillRect(px(0), py(th), tw * k, th * k);
+  ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.strokeRect(px(0), py(th), tw * k, th * k);
+  ctx.font = font + 'px system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  const rect = (r, fill, label) => {
+    const [x0, x1, y0, y1] = r;
+    ctx.fillStyle = fill; ctx.fillRect(px(x0), py(y1), (x1 - x0) * k, (y1 - y0) * k);
+    ctx.fillStyle = mute; ctx.fillText(label, px(x0) + 3, py(y1) + font * 0.7);
+  };
+  for (const [name, r] of Object.entries(m.supply || {})) rect(r, css('--zone'), 'supply ' + name);
+  rect(m.build_area, css('--strip'), 'build strip');
+  ctx.strokeStyle = mute; ctx.setLineDash([4, 3]);
+  ctx.strokeRect(px(m.pickup[0] - 3), py(m.pickup[1] + 3), 6 * k, 6 * k); ctx.setLineDash([]);
+  ctx.fillStyle = mute; ctx.textAlign = 'center'; ctx.fillText('pickup', px(m.pickup[0]), py(m.pickup[1] - 4));
+  // arm base
+  ctx.fillStyle = mute; ctx.beginPath(); ctx.arc(px(m.base[0]), py(m.base[1]), 2.5 * k, 0, 7); ctx.fill();
+  ctx.fillText('arm base', px(m.base[0]), py(m.base[1]) - 3.3 * k);
+  ctx.fillText('you', W / 2, H - font * 0.7);
+
+  // plan: ghosts for later steps, filled when done, thick for the current one
+  const steps = (m.steps || []).slice().sort((a, b) => a.z - b.z);
+  for (const s of steps) {
+    const x = px(s.x - s.w / 2), y = py(s.y + s.d / 2), w = s.w * k, h = s.d * k;
+    ctx.lineWidth = s.state === 'active' ? 3 : 1.5;
+    ctx.strokeStyle = s.state === 'active' ? tgt : colorOf(s.color);
+    if (s.state === 'done') { ctx.globalAlpha = 0.8; ctx.fillStyle = colorOf(s.color); ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1; }
+    else if (s.state === 'failed') { ctx.setLineDash([2, 2]); ctx.strokeStyle = css('--stop'); }
+    else if (s.state !== 'active') ctx.setLineDash([5, 4]);
+    ctx.strokeRect(x + s.layer, y - s.layer, w, h);                      // upper layers nudge up-right a little
+    ctx.setLineDash([]);
+    ctx.fillStyle = ink; ctx.textAlign = 'center';
+    ctx.fillText('L' + s.layer, x + w / 2 + s.layer, y + h / 2 - s.layer);
+  }
+
+  // tracked blocks
+  for (const b of m.blocks || []) {
+    const [L, S] = b.size || [3, 3];
+    ctx.save(); ctx.translate(px(b.x), py(b.y)); ctx.rotate(-(b.angle || 0) * Math.PI / 180);
+    ctx.fillStyle = colorOf(b.color); ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = ink; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (b.round) ctx.arc(0, 0, L / 2 * k, 0, 7); else ctx.rect(-L / 2 * k, -S / 2 * k, L * k, S * k);
+    ctx.fill(); ctx.globalAlpha = 1; ctx.stroke(); ctx.restore();
+    ctx.fillStyle = ink; ctx.textAlign = 'center';
+    const what = (b.color && b.color !== 'natural' ? b.color + ' ' : '') + (b.name || b.type || '?');
+    ctx.fillText(what, px(b.x), py(b.y) + (S / 2 + 1.4) * k);
+  }
+
+  // target: ring + arrow from the claw
+  const c = m.claw || m.claw_cmd, t = m.target;
+  if (t && t.x != null) {
+    ctx.strokeStyle = tgt; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(px(t.x), py(t.y), 3.2 * k, 0, 7); ctx.stroke();
+    if (c) {
+      const ax = px(c.x), ay = py(c.y), bx = px(t.x), by = py(t.y), d = Math.hypot(bx - ax, by - ay);
+      if (d > 3.5 * k) {
+        const ux = (bx - ax) / d, uy = (by - ay) / d, ex = bx - ux * 3.2 * k, ey = by - uy * 3.2 * k;
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ex, ey); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - ux * 10 - uy * 6, ey - uy * 10 + ux * 6); ctx.lineTo(ex - ux * 10 + uy * 6, ey - uy * 10 - ux * 6);
+        ctx.closePath(); ctx.fillStyle = tgt; ctx.fill();
+      }
+    }
+    ctx.fillStyle = tgt; ctx.textAlign = 'center';
+    ctx.fillText(t.kind === 'place' ? 'place here' : t.kind === 'find' ? 'next spot' : 'target', px(t.x), py(t.y) - 4.2 * k);
+  }
+
+  // hands
+  for (const h of m.hands || []) {
+    ctx.fillStyle = css('--hand'); ctx.globalAlpha = 0.8;
+    ctx.beginPath(); ctx.arc(px(h.x), py(h.y), 2.2 * k, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.fillText('hand', px(h.x), py(h.y) + 3.4 * k);
+  }
+
+  // claw, with the 10 cm stop circle when it is low
+  if (c) {
+    if ((c.marker_z != null ? c.marker_z : c.z) < m.stop_claw_height) {
+      ctx.strokeStyle = css('--stop'); ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.arc(px(c.x), py(c.y), m.stop_distance * k, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.strokeStyle = ink; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px(c.x), py(c.y), 1.6 * k, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px(c.x) - 2.4 * k, py(c.y)); ctx.lineTo(px(c.x) + 2.4 * k, py(c.y));
+    ctx.moveTo(px(c.x), py(c.y) - 2.4 * k); ctx.lineTo(px(c.x), py(c.y) + 2.4 * k); ctx.stroke();
+    ctx.fillStyle = ink; ctx.textAlign = 'left';
+    ctx.fillText('claw ' + c.z.toFixed(1) + ' cm up', px(c.x) + 2.8 * k, py(c.y) - 1.8 * k);
+  }
+}
+
+function drawFront(m) {
+  const cv = $('front'), ctx = cv.getContext('2d');
+  const [x0, x1] = m.build_area;
+  const steps = m.steps || [];
+  const top = Math.max(8, ...steps.map(s => s.z + s.h)) + 2;
+  const X0 = x0 - 2, X1 = x1 + 2;
+  const [W, H] = fitCanvas(cv, 0.25);
+  const k = Math.min(W / (X1 - X0), (H - 16) / top);
+  const ox = (W - (X1 - X0) * k) / 2;
+  const px = x => ox + (x - X0) * k, pz = z => H - 14 - z * k;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = css('--card'); ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = css('--mute'); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(px(X0), pz(0)); ctx.lineTo(px(X1), pz(0)); ctx.stroke();
+  ctx.font = '11px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = css('--mute');
+  ctx.fillText(steps.length ? 'front view: ' + steps.filter(s => s.state === 'done').length + ' / ' + steps.length + ' placed'
+    : 'front view: no plan', 4, H - 4);
+  for (const s of steps.slice().sort((a, b) => b.y - a.y)) {          // back first, front on top
+    const x = px(s.x - s.w / 2), y = pz(s.z + s.h), w = s.w * k, h = s.h * k;
+    ctx.lineWidth = s.state === 'active' ? 3 : 1.5;
+    ctx.strokeStyle = s.state === 'active' ? css('--target') : colorOf(s.color);
+    if (s.state === 'done') { ctx.fillStyle = colorOf(s.color); ctx.fillRect(x, y, w, h); ctx.strokeStyle = css('--ink'); }
+    else if (s.state !== 'active') ctx.setLineDash([5, 4]);
+    ctx.strokeRect(x, y, w, h); ctx.setLineDash([]);
+  }
+}
+
+async function refreshMap() {
+  try {
+    const m = await (await fetch('/api/map')).json();
+    const p = $('phase');
+    let text = m.phase || '';
+    if (m.layer && m.layers) text += '   (layer ' + m.layer + ' of ' + m.layers + ')';
+    if (m.target && m.target.dist != null) text += '   ' + m.target.dist + ' cm to go';
+    p.textContent = text;
+    p.className = (m.safety || m.paused) ? 'warn' : '';
+    drawMap(m); drawFront(m);
+  } catch (e) { $('phase').textContent = 'map unavailable: ' + e; }
+}
+
 loadPresets();
+setInterval(refreshMap, 200);
 setInterval(refreshImages, 200);
 setInterval(refreshStatus, 500);
 refreshImages(); refreshStatus();

@@ -316,6 +316,16 @@ class Motion:
     def listen(self):
         return gestures.listen(self)
 
+    def express(self, name, **kw):
+        """Any emotion in gestures.EMOTIONS ("happy", "confused", "look_at", x=.., y=..)."""
+        return gestures.express(self, name, **kw)
+
+    def __getattr__(self, name):
+        # Builder._gesture("happy") looks emotions up by name
+        if name in gestures.EMOTIONS:
+            return lambda **kw: gestures.express(self, name, **kw)
+        raise AttributeError(name)
+
 
 def _seg_dist(p, a, b):
     """2-D distance from point p to segment a-b."""

@@ -18,6 +18,7 @@ class Fetcher:
         self._worker = None
         self.last = None          # {"x", "y", "type", "color"}: the block we last put down
         self.result = None
+        self.target = None        # for the map: {"block": tracked block, "place": (x, y), "label"} while running
 
     def busy(self):
         return self._worker is not None and self._worker.is_alive()
@@ -156,6 +157,7 @@ class Fetcher:
                 yaw = block_yaw_from_long_axis(blk.get("angle", 0.0), tid, self.catalog)
                 blk.update(z=0.0, pose=0, yaw=yaw, color=blk.get("color") or "any")
                 g = m.grip_for(yaw, "y", yaw, tid)
+                self.target = {"block": dict(blk), "place": list(target), "label": label, "stage": "pick"}
                 b.action(f"{label}: picking it up")
                 r = m.pick(blk, g)
                 if r == "ok":
@@ -171,6 +173,7 @@ class Fetcher:
                 result = "stopped" if (r == "abort" or b.cancel.is_set()) else f"pick {r}"
             else:
                 b.action(f"{label}: putting it down")
+                self.target = dict(self.target or {}, stage="place")
                 step = {"x": target[0], "y": target[1], "z": 0.0, "h": self.catalog.height(tid)}
                 r = m.place(step, g)
                 result = "done" if r == "ok" else ("stopped" if r == "abort" else f"place {r}")
@@ -188,6 +191,7 @@ class Fetcher:
             b.cancel.clear()
             b.paused = False
             self.result = result
+            self.target = None
             with b.lock:
                 b.status["result"] = result
                 b.status["paused"] = False

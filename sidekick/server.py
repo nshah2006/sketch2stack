@@ -16,6 +16,7 @@ Stale-state rules the API enforces:
   * /api/generate echoes the caller's request_id so late answers are ignored
 """
 import json
+import math
 import mimetypes
 import threading
 import time
@@ -25,8 +26,9 @@ from pathlib import Path
 
 import cv2
 
-from . import intents, planner, presets, speech, webapi
+from . import brain, intents, planner, presets, speech, webapi
 from .fetch import Fetcher
+from .jog import Jogger
 from .overlay import TopDown, render
 
 UI_DIR = Path(__file__).parent / "ui"
@@ -44,6 +46,25 @@ class App:
         self._gen_lock = threading.Lock()
         self.run_build = None          # the app's build for the current run_id (so any tab can show it)
         self.fetch = Fetcher(cfg, catalog, builder)    # "hand me a cube": one-off moves outside a build
+        self.jog = Jogger(cfg, catalog, builder)        # "back off" / "move up" / "move down"
+        self._expr = None                               # thread playing an emotion gesture
+        self.pick_target = None                         # last "pick" log entry of the build (for the map)
+        self._watch_log(builder)
+
+    def _watch_log(self, b):
+        """Note the block each pick goes for (Builder._do_step logs "pick" with its id
+        and position) without touching builder.py."""
+        orig = b.log
+
+        def log(msg, **extra):
+            if msg == "pick" and "block" in extra:
+                self.pick_target = {"step": extra.get("step"), "id": extra["block"],
+                                    "x": extra.get("x"), "y": extra.get("y"), "run_id": b.run_id}
+            return orig(msg, **extra)
+        b.log = log
+
+    def _expressing(self):
+        return self._expr is not None and self._expr.is_alive()
 
     # ---------------------------------------------------------------- info
     def info(self):
@@ -127,6 +148,9 @@ class App:
     # ---------------------------------------------------------------- running
     def build(self, data):
         design = self._design(data)
+        if self.jog.busy() or self._expressing():
+            return False, {"ok": False, "problems": [{"level": "error", "msg": "the arm is moving; wait a moment"}],
+                           "run_id": None, "server_id": self.server_id}
         if self.fetch.busy():
             return False, {"ok": False, "problems": [{"level": "error", "msg": "the arm is handing over a block; "
                                                       "wait a moment"}], "run_id": None, "server_id": self.server_id}
@@ -156,11 +180,187 @@ class App:
         s["fetching"] = self.fetch.busy()
         return s
 
+    # ---------------------------------------------------------------- digital map
+    def map(self):
+        """Top-down picture of what the arm knows, as JSON (twin.html draws it)."""
+        cfg, cat, b, f = self.cfg, self.catalog, self.builder, self.fetch
+        L = cfg["layout"]
+        s = b.snapshot()
+        busy, fetching = b.busy(), f.busy()
+        marker = s.get("claw")          # the gripper marker; its tip sits marker_to_fingertip below
+        claw = None
+        if marker:
+            tip = self.jog.seen_tip()
+            if tip:
+                claw = {"x": round(tip[0], 2), "y": round(tip[1], 2), "z": round(tip[2], 2),
+                        "marker_z": round(float(marker["z"]), 2)}   # the safety stop compares marker_z
+        try:
+            cx, cy, cz = self.jog.where()
+            cmd = {"x": round(cx, 2), "y": round(cy, 2), "z": round(cz, 2)}
+        except Exception:
+            cmd = None
+        blocks = []
+        for blk in s.get("blocks", []):
+            tid = blk.get("type")
+            blocks.append({"id": blk.get("id"), "x": round(blk["x"], 2), "y": round(blk["y"], 2),
+                           "yaw": round(float(blk.get("yaw", blk.get("angle", 0.0)) or 0.0), 1),
+                           "angle": round(float(blk.get("angle", 0.0) or 0.0), 1),
+                           "size": ([round(float(v), 2) for v in (blk.get("size") or [])][:2]
+                                    or (sorted(cat.size(tid, blk.get("pose", 0))[:2], reverse=True)
+                                        if tid in cat.types else None)),
+                           "type": tid, "name": cat.types[tid].get("name", tid) if tid in cat.types else None,
+                           "color": blk.get("color"), "zone": blk.get("zone") or None,
+                           "round": blk.get("round"), "z": round(float(blk.get("z") or 0.0), 2)})
+        # plan, layer by layer
+        plan, states = s.get("plan", []), s.get("steps", [])
+        levels = sorted({round(st["z"], 1) for st in plan})
+        steps, current = [], None
+        for i, st in enumerate(plan):
+            state = states[i]["state"] if i < len(states) else "todo"
+            if state == "active":
+                current = i
+            fx, fy = cat.footprint(st["type"], st.get("yaw", 0), st.get("pose", 0))
+            steps.append({"i": i, "index": st.get("index"), "type": st["type"], "color": st.get("color"),
+                          "x": st["x"], "y": st["y"], "z": st["z"], "h": st["h"], "yaw": st.get("yaw", 0.0),
+                          "w": fx, "d": fy, "layer": levels.index(round(st["z"], 1)) + 1, "state": state})
+        layer = steps[current]["layer"] if current is not None else None
+        # what the arm is going for
+        target, action = None, s.get("action") or ""
+        placing = "placing" in action or "putting it down" in action
+        if busy and self.pick_target and self.pick_target.get("run_id") == b.run_id and current is not None \
+                and self.pick_target.get("step") == current:
+            pt = self.pick_target
+            live = next((x for x in blocks if x["id"] == pt["id"]), None)
+            target = {"kind": "place" if placing else "pick", "id": pt["id"],
+                      "x": live["x"] if live else pt["x"], "y": live["y"] if live else pt["y"],
+                      "block": live, "step": current}
+            if placing:
+                target.update(x=steps[current]["x"], y=steps[current]["y"], z=steps[current]["z"])
+        elif busy and current is not None and not placing:
+            target = {"kind": "find", "step": current, "x": steps[current]["x"], "y": steps[current]["y"],
+                      "block": None}
+        elif fetching and f.target:
+            ft = f.target
+            blk = ft.get("block") or {}
+            live = next((x for x in blocks if x["id"] == blk.get("id")), None)
+            if ft.get("stage") == "place":
+                target = {"kind": "place", "x": ft["place"][0], "y": ft["place"][1], "block": None}
+            else:
+                target = {"kind": "pick", "id": blk.get("id"), "x": (live or blk).get("x"),
+                          "y": (live or blk).get("y"), "block": live}
+        if target is not None and target.get("x") is not None:
+            here = claw or cmd
+            target["dist"] = round(math.hypot(here["x"] - target["x"], here["y"] - target["y"]), 1) if here else None
+        return {"t": round(b.clock.time(), 2), "server_id": self.server_id, "run_id": b.run_id,
+                "table": list(L["work_area"]), "build_area": list(L["build_area"]),
+                "supply": {k: list(v) for k, v in L["supply"].items()}, "pickup": list(L["pickup"]),
+                "base": list(L["base"]), "stop_distance": cfg["stop_distance"],
+                "stop_claw_height": cfg["stop_claw_height"],
+                "claw": claw, "claw_cmd": cmd, "hands": [{"x": round(h["x"], 1), "y": round(h["y"], 1),
+                                                         "open": h.get("open")} for h in s.get("hands", [])],
+                "blocks": blocks, "steps": steps, "layers": len(levels), "layer": layer, "current": current,
+                "target": target, "phase": self._phase(s, busy, fetching, target, layer, len(levels), claw or cmd),
+                "action": action, "mode": s.get("mode"), "paused": bool(s.get("paused")),
+                "safety": bool(s.get("safety")), "prompt": s.get("prompt"), "busy": busy, "fetching": fetching,
+                "jogging": self.jog.busy(), "expressing": self._expressing()}
+
+    def _phase(self, s, busy, fetching, target, layer, layers, here):
+        if s.get("safety"):
+            return "paused: hand near the claw"
+        if s.get("paused"):
+            return "paused (say 'go on')"
+        if self.jog.busy():
+            return "moving where you asked"
+        if self._expressing():
+            return "expressing"
+        if not (busy or fetching):
+            return "idle"
+        if s.get("prompt"):
+            return "waiting: " + s["prompt"]
+        lay = f" layer {layer}/{layers}" if layer and layers else ""
+        if target is None:
+            return s.get("action") or "working"
+        if target["kind"] == "place":
+            return "placing" + lay
+        if target["kind"] == "find":
+            return "looking for a block" + (" for" + lay if lay else "")
+        d = target.get("dist")
+        if d is None:
+            return "picking"
+        look = self.cfg.get("pick_look_cm", 10.0)
+        if d > look + 3:
+            return "moving to target"
+        if d > 4:
+            return "looking at target"
+        if d > 1.5:
+            return "aligning"
+        return "picking"
+
     def view(self):
         """The MuJoCo twin's perspective view (JPEG bytes), or None."""
         return getattr(self.world, "view_jpeg", None)
 
     # ---------------------------------------------------------------- spoken commands
+    # ---------------------------------------------------------------- conversation
+    FAST = {"stop", "pause", "cancel", "resume", "back_off", "move_up", "move_down", "express",
+            "hand_me", "put_there", "status"}
+
+    def chat(self, data):
+        """Talk to the assistant. Clear commands run at once (stopping must never wait for
+        a model); anything else goes to the brain, which looks at the bench, answers,
+        maybe shows a feeling, and issues commands through the same tested path.
+        Builds are checked against the blocks on the bench first.
+        -> {ok, reply, emotion, commands, results, source}"""
+        text = str(data.get("text", ""))[:300]
+        hist = self.__dict__.setdefault("_history", [])
+        it = intents.parse(text, self.catalog)
+        if it["intent"] in self.FAST:
+            r = self.command({"text": text})
+            return {"ok": r.get("ok", False), "reply": r.get("reply", ""), "emotion": None,
+                    "commands": [text], "results": [r], "source": "rules"}
+        th = brain.think(text, self.builder, self.catalog, self.cfg, hist)
+        replies, results = [th["say"]] if th["say"] else [], []
+        for c in th["commands"]:
+            ci = intents.parse(c, self.catalog)
+            if ci["intent"] == "preset":
+                rv = brain.review(presets.get(ci["preset"]), brain.scene(self.builder, self.catalog, self.cfg),
+                                  self.catalog)
+                if not rv["ok"]:
+                    replies.append(rv["say"])
+                    results.append({"ok": False, "reply": rv["say"]})
+                    th["emotion"] = rv["emotion"]
+                    continue
+            r = self.command({"text": c})
+            results.append(r)
+            if r.get("reply") and r["reply"] not in replies:
+                replies.append(r["reply"])
+        emo = th["emotion"]
+        if emo and not th["commands"] and not self.builder.busy() and not self.fetch.busy():
+            kw = {}
+            if emo == "look_at":
+                h = brain.nearest_hand(brain.scene(self.builder, self.catalog, self.cfg)["hands"])
+                kw = {"x": h["x"], "y": h["y"]} if h else {"x": 25.0, "y": 5.0}
+            threading.Thread(target=self._safe_express, args=(emo, kw), daemon=True).start()
+        return {"ok": True, "reply": " ".join(replies).strip() or "Okay.", "emotion": emo,
+                "commands": th["commands"], "results": results, "source": th["source"]}
+
+    def _safe_express(self, name, kw):
+        try:
+            if not (self._expressing() or self.jog.busy()):
+                self.builder.motion.express(name, **kw)
+        except Exception as e:
+            self.builder.log(f"emotion {name} skipped: {e!r}")
+
+    def look(self):
+        """What the assistant sees right now, in words and as data."""
+        sc = brain.scene(self.builder, self.catalog, self.cfg)
+        return {"say": brain.describe(sc, self.catalog), "scene": sc}
+
+    def review(self, data):
+        """Check a schematic (preset id or design) against the blocks on the bench."""
+        design = presets.get(data["preset"]) if data.get("preset") else self._design(data)
+        return brain.review(design, brain.scene(self.builder, self.catalog, self.cfg), self.catalog)
+
     def command(self, data):
         """Typed/spoken command -> {ok, intent, reply}. See intents.py for the phrases."""
         text = str(data.get("text", ""))[:300]
@@ -182,7 +382,15 @@ class App:
                 b.arm.stop()
                 return {**out, "ok": True, "reply": "Nothing to cancel."}
             return {**out, "ok": True, "reply": "Okay, stopping."}
+        if kind in ("back_off", "move_up", "move_down"):
+            return self._jog(out, kind)
+        if kind == "express":
+            return self._express(out, it.get("emotion"))
         if kind == "resume":
+            if b.paused:
+                self._wait_jog()
+                self.jog.restore()
+                self.jog.saved = None
             if b.resume():
                 return {**out, "ok": True, "reply": "Going on."}
             if b.safety_stopped:
@@ -217,6 +425,59 @@ class App:
             return {**out, "reply": "I can't clear the table on my own yet. Please move the blocks back by hand."}
         return {**out, "reply": "Sorry, I didn't get that. Try 'build the house', 'hand me a cube', "
                                 "'stop' or 'go on'."}
+
+    # ---------------------------------------------------------------- nudges and emotions
+    def _wait_jog(self, timeout=8.0):
+        end = time.monotonic() + timeout
+        while self.jog.busy() and time.monotonic() < end:
+            time.sleep(0.05)
+
+    def _jog(self, out, kind):
+        """Pause whatever runs, nudge the claw, stay paused until "go on"."""
+        b, f = self.builder, self.fetch
+        if b.safety_stopped and kind == "move_down":
+            return {**out, "reply": "Not moving down while your hand is near the claw."}
+        if self._expressing():
+            return {**out, "reply": "One moment, I'm in the middle of a gesture."}
+        task = b.busy() or f.busy()
+        if task and not b.paused:
+            b.pause() if b.busy() else f.pause()
+            time.sleep(0.15)           # let the interrupted move see the pause
+        ok, msg, info = self.jog.run(kind, keep=task)
+        words = {"back_off": "Backing off", "move_up": "Moving up", "move_down": "Moving down"}[kind]
+        reply = f"{words}: {msg}." if ok else msg
+        if task:
+            reply += " Holding here; say 'go on' to continue."
+        return {**out, "ok": ok, "reply": reply, "jog": info, "paused": bool(task)}
+
+    def _express(self, out, name):
+        b, f = self.builder, self.fetch
+        if not name:
+            return {**out, "reply": "Which feeling? Try 'look happy' or 'nod'."}
+        if b.busy() or f.busy():
+            return {**out, "reply": "I'm busy with a task right now. Ask me again when I'm done."}
+        if self._expressing() or self.jog.busy():
+            return {**out, "reply": "One moment, I'm still moving."}
+        if b.safety_stopped:
+            return {**out, "reply": "Not while your hand is near the claw."}
+        kw = {}
+        if name == "look_at":
+            hands = b.snapshot().get("hands") or []
+            kw = {"x": float(hands[0]["x"]), "y": float(hands[0]["y"])} if hands else {"x": 25.0, "y": 5.0}
+
+        def go():
+            try:
+                r = b.motion.express(name, **kw)
+                b.log(f"emotion {name}: {r}")
+            except Exception as e:
+                b.log(f"emotion {name} failed: {e!r}")
+        b.log(f"emotion {name}")
+        self._expr = threading.Thread(target=go, daemon=True)
+        self._expr.start()
+        nice = {"yes": "Nodding yes", "no": "Shaking my head", "happy": "Happy!", "sad": "Sad...",
+                "confused": "Hmm, confused", "thinking": "Thinking", "greet": "Hello!", "excited": "Excited!",
+                "sleepy": "Getting sleepy", "look_at": "Looking at you"}.get(name, name)
+        return {**out, "ok": True, "emotion": name, "reply": nice if nice[-1] in ".!?" else nice + "."}
 
     def _start(self, out, build, reply):
         ok, body = self.build({"build": build})
@@ -378,10 +639,14 @@ def make_handler(app):
             path = self.path.split("?")[0]
             if path == "/api/info":
                 return self._send(200, app.info())
+            if path == "/api/look":
+                return self._send(200, app.look())
             if path == "/api/presets":
                 return self._send(200, {"builds": app.preset_builds()})
             if path == "/api/status":
                 return self._send(200, app.status())
+            if path == "/api/map":
+                return self._send(200, app.map())
             if path == "/api/run":
                 return self._send(200, app.current_run())
             if path == "/api/frame.jpg":
@@ -430,6 +695,10 @@ def make_handler(app):
                 return self._send(200, app.revise(data))
             if path == "/api/command":
                 return self._send(200, app.command(data))
+            if path == "/api/chat":
+                return self._send(200, app.chat(data))
+            if path == "/api/review":
+                return self._send(200, app.review(data))
             if path == "/api/build":
                 ok, body = app.build(data)
                 return self._send(200 if ok else 409, body)

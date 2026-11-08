@@ -152,7 +152,8 @@ def detect_blocks(image, cfg, calib, markers=None, claw_px=None, hands_px=None):
             out.append({"color": color, "x": p[0], "y": p[1], "angle": fold180(ang),
                         "size": [max(l1, l2), min(l1, l2)], "round": bool(circ > 0.84),
                         "px": (float(cx), float(cy)),
-                        "box_px": [[float(u), float(v)] for u, v in cv2.boxPoints(rect)]})
+                        "box_px": [[float(u), float(v)] for u, v in cv2.boxPoints(rect)],
+                        "cnt": cnt})                # outline (px), for the silhouette fit
     return out
 
 
@@ -161,11 +162,198 @@ def fold180(a):
     return (a + 90.0) % 180.0 - 90.0
 
 
+# ===================================================================== silhouette fit
+# From 60 cm up the camera sees a block's top AND the sides facing away from the
+# nadir, so the blob is the hull of the projected bottom and top outlines. A tall
+# block (pillar, tall cylinder) throws a longer blob than its short twin (cube,
+# short cylinder) everywhere but right under the camera. Fitting each candidate
+# type's projected silhouette to the blob tells them apart, gives the centre and
+# yaw without the perspective bias, and flags blobs no single block explains
+# (touching blocks), which are then split.
+FIT_OK = 0.80          # IoU for "this one block explains the blob"
+FIT_PART = 0.72        # score for one block inside a split blob
+FIT_PAD = 12           # px around the blob
+
+
+def _outline(catalog, tid, pose=0):
+    """3D points (block frame, cm, bottom at z=0) whose image hull is the silhouette."""
+    w, d, h = catalog.size(tid, pose)
+    shape = catalog.types[tid]["shape"]
+    if shape == "cylinder":
+        ring = [(w / 2 * math.cos(a), d / 2 * math.sin(a)) for a in np.linspace(0, 2 * math.pi, 20, endpoint=False)]
+        return np.array([(x, y, z) for z in (0.0, h) for x, y in ring])
+    base = [(sx * w / 2, sy * d / 2, 0.0) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    top = [(0.0, -d / 2, h), (0.0, d / 2, h)] if shape == "roof" else [(x, y, h) for x, y, _ in base]
+    return np.array(base + top)
+
+
+def _silhouette(calib, pts, x, y, yaw):
+    a = math.radians(yaw)
+    c, s = math.cos(a), math.sin(a)
+    w = np.column_stack([x + c * pts[:, 0] - s * pts[:, 1], y + s * pts[:, 0] + c * pts[:, 1], pts[:, 2]])
+    px, _ = cv2.projectPoints(w.astype(np.float64), calib.rvec, calib.tvec, calib.K, calib.dist)
+    return cv2.convexHull(px.reshape(-1, 2).astype(np.float32))
+
+
+def _fit_type(calib, catalog, tid, target, blob, off, angle, refine=True):
+    """Best placement of one `tid` block on `target` (mask). -> (score, x, y, yaw).
+    blob: the whole blob mask (for a split part the block may cover neighbour
+    pixels of the same blob, but nothing outside it)."""
+    pts = _outline(catalog, tid)
+    h = catalog.height(tid)
+    m = cv2.moments(target, binaryImage=True)
+    if m["m00"] <= 0:
+        return (0.0, 0.0, 0.0, 0.0)
+    cu, cv_ = m["m10"] / m["m00"] + off[0], m["m01"] / m["m00"] + off[1]
+    p0 = calib.pixel_to_table(cu, cv_, h / 2)
+    if p0 is None:
+        return (0.0, 0.0, 0.0, 0.0)
+    w, d, _ = catalog.size(tid)
+    yaw0 = fold180(angle if w >= d else angle + 90.0)
+    yaws = [yaw0] if (catalog.round_(tid) or abs(w - d) < 0.3) else [yaw0 - 5, yaw0, yaw0 + 5]
+    n_t = float(target.sum())
+    part = blob is not target
+    best = (0.0, p0[0], p0[1], yaw0)
+    pm = np.zeros_like(target)
+    for yaw in yaws:
+        x, y = p0
+        for _ in range(2):                 # recentre: predicted blob centroid onto the measured one
+            hull = _silhouette(calib, pts, x, y, yaw)
+            hm = cv2.moments(hull)
+            if hm["m00"] <= 0:
+                break
+            du, dv = cu - hm["m10"] / hm["m00"], cv_ - hm["m01"] / hm["m00"]
+            if abs(du) + abs(dv) < 0.3:
+                break
+            c0 = calib.table_to_pixel(x, y, h / 2)
+            q = calib.pixel_to_table(c0[0] + du, c0[1] + dv, h / 2)
+            if q is None:
+                break
+            x, y = q
+        shifts = [(0, 0)] if not (part and refine) else [(i, j) for i in (-3, 0, 3) for j in (-3, 0, 3)]
+        hull = _silhouette(calib, pts, x, y, yaw)
+        for su, sv in shifts:
+            pm[:] = 0
+            poly = (hull.reshape(-1, 2) - np.array(off, np.float32) + (su, sv)).round().astype(np.int32)
+            cv2.fillConvexPoly(pm, poly, 1)
+            n_p = float(pm.sum())
+            if n_p <= 0:
+                continue
+            inter = float((pm & target).sum())
+            if part:   # inside the blob, and explaining this part of it
+                score = min(float((pm & blob).sum()) / n_p, inter / n_t)
+            else:
+                score = inter / (n_p + n_t - inter)
+            if score > best[0]:
+                xx, yy = x, y
+                if su or sv:
+                    c0 = calib.table_to_pixel(x, y, h / 2)
+                    q = calib.pixel_to_table(c0[0] + su, c0[1] + sv, h / 2)
+                    xx, yy = q if q else (x, y)
+                best = (score, xx, yy, yaw)
+    return best
+
+
+def _split(blob, min_px=40):
+    """Touching blocks: erode until the blob falls apart, then give every pixel to
+    its nearest core. -> [part masks] (empty if it never splits)."""
+    for r in range(2, 30, 2):
+        core = cv2.erode(blob, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1)))
+        n, lab, stats, _ = cv2.connectedComponentsWithStats(core)
+        keep = [i for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] >= min_px]
+        if len(keep) >= 2:
+            src = np.full(blob.shape, 255, np.uint8)
+            for i in keep:
+                src[lab == i] = 0
+            _, near = cv2.distanceTransformWithLabels(src, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_CCOMP)
+            parts = []
+            for i in keep:
+                ys, xs = np.nonzero(lab == i)
+                parts.append((blob & (near == near[ys[0], xs[0]])).astype(np.uint8))
+            return parts
+        if len(keep) == 0:
+            return []
+    return []
+
+
+def fit_blob(d, catalog, calib):
+    """Silhouette-fit one color blob. -> [detections]: the blob itself with its
+    best type (or type None when nothing fits), or its parts when it is two or
+    more touching blocks. Each gets "fit" (score) and "alts" {type: score}."""
+    cnt = np.asarray(d["cnt"]).reshape(-1, 2)
+    x0, y0 = cnt.min(axis=0) - FIT_PAD
+    x1, y1 = cnt.max(axis=0) + FIT_PAD
+    off = (int(x0), int(y0))
+    blob = np.zeros((int(y1 - y0) + 1, int(x1 - x0) + 1), np.uint8)
+    cv2.fillPoly(blob, [(cnt - off).astype(np.int32)], 1)
+    tids = [t for t, v in catalog.types.items() if d["color"] in v["colors"]]
+
+    def best_of(target, angle, part=False):
+        res = {t: _fit_type(calib, catalog, t, target, blob, off, angle) if part
+               else _fit_type(calib, catalog, t, target, target, off, angle) for t in tids}
+        return res
+
+    def as_det(src, res, parts=False):
+        tid = max(res, key=lambda t: res[t][0]) if res else None
+        ok = tid is not None and res[tid][0] >= (FIT_PART if parts else FIT_OK)
+        out = dict(src)
+        out.pop("cnt", None)
+        out["alts"] = {t: round(v[0], 3) for t, v in res.items()}
+        out["fit"] = round(res[tid][0], 3) if tid else 0.0
+        if not ok:
+            out["type"] = None
+            return out
+        sc, x, y, yaw = res[tid]
+        w, dd, _ = catalog.size(tid)
+        out.update({"type": tid, "x": x, "y": y, "angle": fold180(yaw if w >= dd else yaw - 90.0),
+                    "size": sorted(catalog.size(tid)[:2], reverse=True)})
+        return out
+
+    res = best_of(blob, d.get("angle", 0.0))
+    one = as_det(d, res)
+    if one["type"] is not None or not tids:
+        return [one]
+    out = []
+    for pmask in _split(blob):
+        m = cv2.moments(pmask, binaryImage=True)
+        if m["m00"] <= 0:
+            continue
+        cnts, _ = cv2.findContours(pmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            continue
+        (cu, cv_), _, _ = rect = cv2.minAreaRect(max(cnts, key=cv2.contourArea))
+        box = [calib.pixel_to_table(u + off[0], v + off[1], 1.5) for u, v in cv2.boxPoints(rect)]
+        ang = d.get("angle", 0.0)
+        if all(box):
+            e1 = (box[1][0] - box[0][0], box[1][1] - box[0][1])
+            e2 = (box[2][0] - box[1][0], box[2][1] - box[1][1])
+            le = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2
+            ang = fold180(math.degrees(math.atan2(le[1], le[0])))
+        src = dict(d, px=(float(cu + off[0]), float(cv_ + off[1])), angle=ang, split=True)
+        part = as_det(src, best_of(pmask, ang, part=True), parts=True)
+        if part["type"] is not None:
+            out.append(part)
+    if not out:
+        one["merged"] = True             # several blocks, can't tell which: never pick it
+        return [one]
+    return out
+
+
 def classify(detections, catalog, calib=None):
     """Add the block type to each detection from its color, outline and footprint.
-    With a camera calibration, re-measure position and size at the block's
-    true top height (the first pass assumed 3 cm)."""
+    With a camera calibration and the blob outline: fit each type's projected
+    silhouette (see above). Otherwise re-measure position and size at the
+    block's true top height (the first pass assumed 3 cm)."""
+    out = []
     for d in detections:
+        if ("size" in d and "type" not in d and d["color"] != "any" and calib is not None
+                and d.get("cnt") is not None and getattr(calib, "rvec", None) is not None):
+            out += fit_blob(d, catalog, calib)
+            continue
+        out.append(d)
+    detections[:] = out
+    for d in detections:
+        d.pop("cnt", None)
         if "size" not in d or "type" in d:
             continue
         tid = (catalog.classify(d["color"], d["size"][0], d["size"][1], d.get("round"))
@@ -203,11 +391,12 @@ class BlockTracker:
             for tid, tr in self.tracks.items():
                 if tr["color"] != d["color"]:
                     continue
-                if tr.get("type") and d.get("type") and tr["type"] != d["type"]:
-                    continue
                 dist = math.hypot(tr["x"] - d["x"], tr["y"] - d["y"])
                 if dist <= self.match_cm:
-                    pairs.append((dist, di, tid))
+                    # a different type is a weaker match (a neighbour), not a different
+                    # block outright: a frame's fit can flip cube <-> pillar near the nadir
+                    differ = tr.get("type") and d.get("type") and tr["type"] != d["type"]
+                    pairs.append((dist + (1.0 if differ else 0.0), di, tid))
         pairs.sort()
         used_d, used_t = set(), set()
         for _, di, tid in pairs:
@@ -220,9 +409,10 @@ class BlockTracker:
             tr["x"] = (1 - a) * tr["x"] + a * d["x"]
             tr["y"] = (1 - a) * tr["y"] + a * d["y"]
             tr["angle"] = d.get("angle", 0.0)
-            for k in ("type", "size", "z", "px", "round"):
+            for k in ("size", "z", "px", "round", "fit"):
                 if d.get(k) is not None:
                     tr[k] = d[k]
+            self._vote(tr, d)
             tr["missed"] = 0
             tr["last_seen"] = t
         for tid, tr in list(self.tracks.items()):
@@ -235,13 +425,30 @@ class BlockTracker:
                 self.tracks[self._next] = {"id": self._next, "color": d["color"], "x": d["x"], "y": d["y"],
                                            "angle": d.get("angle", 0.0), "type": d.get("type"),
                                            "size": d.get("size"), "z": d.get("z"),
-                                           "px": d.get("px"), "missed": 0,
-                                           "first_seen": t, "last_seen": t}
+                                           "px": d.get("px"), "missed": 0, "fit": d.get("fit"),
+                                           "first_seen": t, "last_seen": t, "votes": {}}
+                self._vote(self.tracks[self._next], d)
                 self._next += 1
         for tr in self.tracks.values():
             tr["zone"] = ("build" if self.cfg.in_build(tr["x"], tr["y"], 1.0)
                           else self.cfg.in_supply(tr["x"], tr["y"]))
         return self.active()
+
+    def _vote(self, tr, d, keep=0.85):
+        """The track's type is the (decaying) majority of its frames' types, so one
+        odd frame can't turn a pillar into a cube. Unfit / merged frames vote "?"."""
+        v = tr.setdefault("votes", {})
+        for k in v:
+            v[k] *= keep
+        key = d.get("type") or ("?" if "fit" in d else None)
+        if key is None:                       # no silhouette fit (sim / colorless): take it as is
+            tr["type"] = d.get("type") or tr.get("type")
+            return
+        v[key] = v.get(key, 0.0) + 1.0
+        top = max(v, key=v.get)
+        tr["type"] = None if top == "?" else top
+        tr["sure"] = round(v[top] / sum(v.values()), 2)    # 1.0 = every recent frame agreed
+        tr["merged"] = bool(d.get("merged"))
 
     def active(self):
         """Blocks seen in the last 3 frames."""

@@ -122,6 +122,15 @@ DEFAULTS = {
     "max_build_height": 12.0,      # cm; taller stacks are out of reach
     "depth_slot": 3.0,             # cm per front-to-back slot in the build strip
     "place_clearance": 3.0,        # hover this far above a placement / pick
+    # --- picking around people and clutter (motion.py) ---
+    "pick_track": True,            # stop short, look, follow the block if it moved, then grab
+    "pick_look_cm": 10.0,          # how far short to stop: outside the ~5 cm the camera blanks around the claw
+    "pick_look_s": 1.0,            # look this long before grabbing (fresh frames for the tracker)
+    "transit_lift": True,          # long moves rise above built / loose blocks along the path
+    "transit_clearance": 1.5,      # cm above the tallest thing along the path
+    "transit_margin_cm": 4.0,      # how close to the path something must be to count
+    "yield_lift_cm": 0.0,          # on a hand near the low claw: also lift this far (0 = just freeze)
+    "smooth_moves": True,          # Uno arm: stream eased (minimum-jerk) moves so all joints arrive together
 
     # --- vision ---
     # use_color false: blocks are found as "anything not white" and the arm asks

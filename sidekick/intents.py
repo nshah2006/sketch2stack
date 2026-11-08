@@ -11,6 +11,10 @@ for sentences the rules don't understand (and only when a key is set).
     "put it there"                    {"intent": "put_there", "type": None, "color": None}
     "clean up" / "clear the table"    {"intent": "clear"}
     "what are you doing"              {"intent": "status"}
+    "back off" / "get away"           {"intent": "back_off"}  claw up and toward the base, then hold
+    "move up" / "higher"              {"intent": "move_up"}   +3 cm, then hold
+    "move down" / "lower"             {"intent": "move_down"} -3 cm (never into a block), then hold
+    "nod" / "look happy" / "wave"     {"intent": "express", "emotion": "yes"|"happy"|"greet"|...}
     anything else                     {"intent": "unknown"}
 """
 import json
@@ -28,6 +32,26 @@ CLEAR = r"\b(clean up|clean the table|clear (the |off the )?(table|board|strip)|
 STATUS = r"\b(what are you doing|status|what'?s (going on|happening)|how far)\b"
 HAND = r"\b(hand|give|bring|pass|fetch|get|toss)\b( me| us)?\b|\bcan i (have|get)\b|\bi (need|want) (a|an|the|one|two|that)\b"
 THERE = r"\b(put|place|drop|set|move|leave)\b.*\b(there|here|over there|over here)\b"
+ARM = r"( it| yourself| the (arm|claw|gripper|hand))?"
+BACK_OFF = (r"\b(back (off|away|up|out)|get (away|back|out of (the )?way)|go away|move away|stand back|"
+            r"give me (some )?(room|space)|step back|make room)\b")
+MOVE_UP = (r"\b(move|go|come|lift|raise|get)" + ARM + r" (up|higher)\b|\braise (the )?(arm|claw|gripper)\b|"
+           r"^(a (bit|little) )?(up|higher)( a (bit|little))?$")
+MOVE_DOWN = (r"\b(move|go|come|get)" + ARM + r" (down|lower)\b|\blower (the )?(arm|claw|gripper)\b|"
+             r"^(a (bit|little) )?(down|lower)( a (bit|little))?$")
+# emotion gestures (gestures.EMOTIONS): first match wins
+EXPRESS = [
+    ("look_at", r"\blook (at me|over here|here|at us)\b"),
+    ("yes", r"\b(say yes|nod( your head)?|nodding)\b"),
+    ("no", r"\b(say no|shake your head|shaking your head)\b"),
+    ("happy", r"\b((look|be|get|are you) happy|dance|dancing|celebrate|show (me )?happy)\b"),
+    ("sad", r"\b((look|be|are you|get) sad|cry)\b"),
+    ("confused", r"\b((look|be|are you|get) confused)\b"),
+    ("excited", r"\b((look|be|get) excited)\b"),
+    ("sleepy", r"\b(go to sleep|take a nap|nap( time)?|sleep|sleepy|go to bed)\b"),
+    ("thinking", r"\b(think( about it| it over)?|thinking|ponder)\b"),
+    ("greet", r"\b(wave( hello| hi)?|say (hi|hello)|greet)\b|^(hi|hello)$"),
+]
 BUILD = r"\b(build|make|construct|stack|assemble|create|do)\b"
 ANY_BLOCK = {"block", "blocks", "one", "piece", "something", "anything", "thing"}
 
@@ -104,6 +128,12 @@ def parse(text, catalog=None, use_llm=False):
         return {**out, "intent": "unknown"}
     if re.search(CANCEL, t):
         return {**out, "intent": "cancel"}
+    if re.search(BACK_OFF, t):
+        return {**out, "intent": "back_off"}
+    if re.search(MOVE_UP, t):
+        return {**out, "intent": "move_up"}
+    if re.search(MOVE_DOWN, t):
+        return {**out, "intent": "move_down"}
     if re.search(STOP, t) and not re.search(r"\b(don'?t|do not|never) stop\b", t):
         return {**out, "intent": "stop"}
     if re.search(PAUSE, t):
@@ -114,6 +144,9 @@ def parse(text, catalog=None, use_llm=False):
         return {**out, "intent": "clear"}
     if re.search(STATUS, t):
         return {**out, "intent": "status"}
+    for name, pat in EXPRESS:
+        if re.search(pat, t):
+            return {**out, "intent": "express", "emotion": name}
     if re.search(THERE, t):
         tid, color, _ = block_spec(t, catalog)
         return {**out, "intent": "put_there", "type": tid, "color": color}
@@ -133,7 +166,9 @@ def parse(text, catalog=None, use_llm=False):
     return {**out, "intent": "unknown"}
 
 
-INTENTS = ("stop", "pause", "cancel", "resume", "preset", "build", "hand_me", "put_there", "clear", "status", "unknown")
+INTENTS = ("stop", "pause", "cancel", "resume", "preset", "build", "hand_me", "put_there", "clear", "status",
+           "back_off", "move_up", "move_down", "express", "unknown")
+EMOTION_NAMES = [n for n, _ in EXPRESS]
 
 
 def llm_parse(text, catalog=None):
@@ -146,10 +181,12 @@ def llm_parse(text, catalog=None):
     types = sorted(catalog.types) if catalog is not None else sorted(NOUNS)
     sys_msg = ("You turn a spoken command to a block-building robot arm into JSON: "
                '{"intent": one of ' + json.dumps(list(INTENTS)) + ', "preset": one of '
-               + json.dumps([p["id"] for p in presets.PRESETS]) + ' or null, "type": one of '
+               + json.dumps([p["id"] for p in presets.PRESETS]) + ' or null, "emotion": one of ' + json.dumps(EMOTION_NAMES)
+               + ' or null, "type": one of '
                + json.dumps(types) + ' or null, "color": a color word or null}. '
                "hand_me = the person wants a block handed to them; build = describe something to build; "
-               "put_there = move the held/last block to where they point. Reply with JSON only.")
+               "put_there = move the held/last block to where they point; back_off/move_up/move_down = "
+               "nudge the arm away/up/down; express = show an emotion. Reply with JSON only.")
     body = {"model": chain[0][2], "temperature": 0, "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": sys_msg}, {"role": "user", "content": text[:300]}]}
     try:
@@ -164,6 +201,10 @@ def llm_parse(text, catalog=None):
         if r.get("preset") not in {p["id"] for p in presets.PRESETS}:
             return None
         out["preset"] = r["preset"]
+    if r["intent"] == "express":
+        if r.get("emotion") not in EMOTION_NAMES:
+            return None
+        out["emotion"] = r["emotion"]
     if r["intent"] in ("hand_me", "put_there"):
         out["type"] = r.get("type") if r.get("type") in types else None
         c = (r.get("color") or "").lower() or None

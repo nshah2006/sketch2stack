@@ -428,6 +428,79 @@ def test_intents(cfg):
     return _report(f"spoken commands ({len(cases)} phrasings)", not bad, "; ".join(bad))
 
 
+def test_emotions(cfg):
+    """Every expressive move on the simulated arm: ends on its start pose, stays in
+    the limits and near the start, finishes in time, refuses while carrying."""
+    import threading
+    from . import gestures as G
+    from .arm import make_arm
+    from .motion import Motion
+    from .sim import make_world
+    cat = Catalog.load()
+    w = make_world(cfg, cat, speed=40, seed=4)
+    arm = make_arm(cfg, world=w).connect()
+    arm.start(cfg["ready"])
+    m = Motion(cfg, arm, None, cat, read_claw=lambda: None, get_blocks=lambda: [],
+               abort=threading.Event(), wait_resume=lambda: True, log=lambda *a: None)
+    m._move(list(cfg["ready"]))
+    lo, hi = cfg["joint_min"], cfg["joint_max"]
+    longest = {"sleepy": 6.5, "refuse": 4.5}         # sleepy loops 2 breaths; refuse is deliberately slow
+    sent, bad, times = [], [], {}
+    send = arm.send_targets
+    arm.send_targets = lambda p: sent.append(list(p)) or send(p)
+    try:
+        for name in G.EMOTIONS:
+            start, sent[:] = list(arm.targets), []
+            t0 = w.clock.time()
+            r = G.express(m, name, **({"x": 5.0, "y": 8.0} if name == "look_at" else {}))
+            dt = times[name] = w.clock.time() - t0
+            near = all(abs(p[i] - start[i]) <= (G.LOOK_TURN_MAX if i == 0 else G.EMO_MAX_US)
+                       for p in sent for i in range(6))
+            inside = all(lo[i] <= p[i] <= hi[i] for p in sent for i in range(6))
+            if r != "ok" or not sent or sent[-1] != start or list(arm.targets) != start \
+                    or not near or not inside or dt > longest.get(name, 2.8):
+                bad.append(f"{name}: {r} {dt:.1f}s end={sent[-1:] == [start]} near={near} limits={inside}")
+        m.claw, n = cfg["claw_closed"], len(sent)         # holding a block: must not move
+        busy = G.express(m, "happy") == "busy" and len(sent) == n
+        m.claw = cfg["claw_open"]
+    finally:
+        arm.send_targets = send
+        arm.close()
+        w.stop()
+    slow = max(times, key=times.get) if times else "-"
+    return _report(f"emotions ({len(G.EMOTIONS)} expressive moves on the simulated arm)", not bad and busy,
+                   "; ".join(bad) or f"all end on start, in limits; longest {slow} {times.get(slow, 0):.1f}s; "
+                   f"refuses while carrying={busy}")
+
+
+def test_jog(cfg):
+    """Voice nudges: back off / up / down / emotion phrasings, and down never dips into a block."""
+    import types
+    from . import intents
+    from .jog import Jogger
+    cat = Catalog.load()
+    cases = {"back off": ("back_off", None), "get away from me": ("back_off", None), "move up": ("move_up", None),
+             "a bit higher": ("move_up", None), "lower the arm": ("move_down", None), "move down": ("move_down", None),
+             "freeze": ("stop", None), "nod": ("express", "yes"), "shake your head": ("express", "no"),
+             "look happy": ("express", "happy"), "wave": ("express", "greet"), "look at me": ("express", "look_at"),
+             "go to sleep": ("express", "sleepy"), "get me a cube": ("hand_me", None)}
+    bad = [t for t, (i, e) in cases.items()
+           if intents.parse(t, cat)["intent"] != i or (e and intents.parse(t, cat).get("emotion") != e)]
+    at = [25.0, 24.5, 6.0]                           # claw tip 6 cm up, over a block whose top is 4.4 cm
+    body = types.SimpleNamespace(forward=lambda p: [at], solve=lambda t: {"reachable": True, "pulses": [1500] * 4})
+    b = types.SimpleNamespace(body=body, arm=types.SimpleNamespace(targets=[1500] * 6), claw=None, hands=[],
+                              motion=types.SimpleNamespace(carry_h=0.0), _obstacles=lambda: [(25.0, 24.5, 4.4)])
+    j = Jogger(cfg, cat, b)
+    down, _ = j.plan("move_down")
+    up, _ = j.plan("move_up")
+    back, _ = j.plan("back_off")
+    ok_z = down is not None and abs(down[-1][2] - 5.4) < 1e-6 and abs(up[-1][2] - 9.0) < 1e-6
+    ok_back = back is not None and back[-1][1] > at[1] and back[-1][2] > at[2]
+    if not ok_z or not ok_back:
+        bad.append(f"jog down={down} up={up} back={back}")
+    return _report(f"voice nudges + emotions ({len(cases)} phrasings, safe heights)", not bad, "; ".join(map(str, bad)))
+
+
 def run(cfg, quick=False):
     import os
     os.environ["SIDEKICK_NO_DB"] = "1"            # tests use the local catalog, not the network
@@ -435,7 +508,7 @@ def run(cfg, quick=False):
     print("Sidekick self-test (no hardware)\n", flush=True)
     results = [test_calibration(cfg), test_markers(cfg), test_firmware(cfg), test_planner(cfg),
                test_tiling_stock(cfg), test_classify(cfg), test_dictation(cfg), test_speech(cfg),
-               test_hand_signs(cfg), test_intents(cfg)]
+               test_hand_signs(cfg), test_intents(cfg), test_emotions(cfg), test_jog(cfg)]
     if not quick:
         with tempfile.TemporaryDirectory() as d:
             ok, body = test_body(cfg, d)

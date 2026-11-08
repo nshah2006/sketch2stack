@@ -29,8 +29,10 @@ from .perception import Observation, detect_blocks
 from .clock import SimClock
 from .sim import FirmwareEmulator, World
 
-RGBA = {"red": (0.80, 0.10, 0.10), "blue": (0.10, 0.25, 0.80), "green": (0.10, 0.60, 0.20),
-        "yellow": (0.95, 0.80, 0.10), "orange": (0.95, 0.45, 0.05), "purple": (0.45, 0.15, 0.65),
+# blue and purple sit mid-band in cfg["colors"] (hue 109 / 127; they were at 113 / 138,
+# on or past the edge of the real-camera ranges, so purple blocks went undetected)
+RGBA = {"red": (0.80, 0.10, 0.10), "blue": (0.10, 0.35, 0.80), "green": (0.10, 0.60, 0.20),
+        "yellow": (0.95, 0.80, 0.10), "orange": (0.95, 0.45, 0.05), "purple": (0.28, 0.15, 0.70),
         "natural": (0.82, 0.64, 0.42)}
 CAM_W, CAM_H, CAM_HFOV = 1280, 720, 70.0      # matches default_lens on the real webcam
 VIEW_W, VIEW_H = 640, 400
@@ -163,7 +165,17 @@ class TwinWorld(World):
         L = {"upper": g["upper"], "fore": g["fore"] * 0.6}     # forearm drawn short of the wrist: keeps the claw marker in view
         arm = [f'<body name="base_col" mocap="true"><geom type="cylinder" size="0.035 {g["shoulder_height"] / 200}" '
                f'material="arm_dark" class="vis"/></body>']
+        bulk = float(cfg.get("twin_arm_bulk", 1.0))    # 0 = thin rods, 1 = like the real kit (servos + brackets)
+        if bulk > 0:                                    # servo bodies at shoulder and elbow block the camera too
+            for nm in ("servo_sh", "servo_el"):
+                arm.append(f'<body name="{nm}" mocap="true"><geom type="box" size="{0.02 * bulk} {0.012 * bulk} {0.022 * bulk}" '
+                           f'material="arm_dark" class="vis"/></body>')
         for link, length in L.items():
+            if bulk > 0:                                # flat U-brackets, ~3 cm wide on the upper arm
+                w = (0.015 if link == "upper" else 0.012) * bulk
+                arm.append(f'<body name="{link}" mocap="true"><geom type="box" size="{w} 0.004 {length / 200}" '
+                           f'material="arm" class="vis"/></body>')
+                continue
             rad = 0.009 if link == "upper" else 0.006     # thin like the real brackets
             arm.append(f'<body name="{link}" mocap="true"><geom type="capsule" size="{rad} {length / 200}" '
                        f'material="arm" class="vis"/></body>')
@@ -216,7 +228,8 @@ class TwinWorld(World):
         self.d = mujoco.MjData(self.m)
         self._fovy = fovy
         mid = lambda n: self.m.body(n).mocapid[0]
-        self._mocap = {n: mid(n) for n in ("base_col", "upper", "fore", "finger_a", "finger_b",
+        self._servos = ["servo_sh", "servo_el"] if float(self.cfg.get("twin_arm_bulk", 1.0)) > 0 else []
+        self._mocap = {n: mid(n) for n in ("base_col", "upper", "fore", "finger_a", "finger_b", *self._servos,
                                            "claw_plate", "hand", "forearm", "torso")}
         self._slot_body = [self.m.body(n).id for _, _, n in self._slot_info]
         self._slot_qadr = [self.m.jnt_qposadr[self.m.body_jntadr[b]] for b in self._slot_body]
@@ -346,9 +359,17 @@ class TwinWorld(World):
         sh = base + [0, 0, h0]
         cm = lambda p: np.asarray(p, float) / 100
 
+        heading = np.array([*(np.asarray(pose["wrist"][:2]) - base[:2]), 0.0])
+        side = np.cross(heading, [0, 0, 1]) if np.linalg.norm(heading[:2]) > 1e-6 else np.array([1.0, 0, 0])
+
         def seg(name, a, b):
             d.mocap_pos[mc[name]] = cm((np.asarray(a) + np.asarray(b)) / 2)
-            d.mocap_quat[mc[name]] = _quat_z_to(np.asarray(b) - np.asarray(a))
+            d.mocap_quat[mc[name]] = _quat_frame(side, np.asarray(b) - np.asarray(a))   # flat side stays horizontal-ish
+
+        for nm, at in (("servo_sh", sh), ("servo_el", pose["elbow"])):
+            if nm in mc:
+                d.mocap_pos[mc[nm]] = cm(at)
+                d.mocap_quat[mc[nm]] = _quat_frame(side, [0, 0, 1])
 
         d.mocap_pos[mc["base_col"]] = cm(base + [0, 0, h0 / 2])
         seg("upper", sh, pose["elbow"])
@@ -460,6 +481,81 @@ class TwinWorld(World):
         dets = detect_blocks(frame, self.cfg, calib, markers, claw_px, [h["px"] for h in hands])
         return Observation(t=t, claw=claw, detections=dets, hands=hands, image=frame,
                            markers=markers, claw_px=claw_px)
+
+    # ================================================================= clutter
+    def scatter(self, n, rng=None, types=None, colors=None, required=(), keep_out=None, margin=2.0,
+                min_gap=4.0, near=(3.2, 4.0), near_frac=0.3, reachable=None, tries=600):
+        """A cluttered table: drop n loose blocks at random reachable spots.
+
+        required: [(type, color)] placed first (what the build needs); the rest
+        are distractors drawn from what the catalog owns (counts respected,
+        minus blocks already out), optionally limited to `types` / `colors`.
+        Spots: outside keep_out (default the build strip) grown by `margin`,
+        footprints never overlap, centres >= min_gap apart, except that about
+        near_frac of the blocks go 3.2-4 cm from another one (near-touching).
+        reachable(x, y) -> bool (e.g. from the body model); default: 9-17 cm
+        from the arm's base. Returns the blocks placed (may be fewer than n)."""
+        rng = rng if rng is not None else self.rng
+        cat = self.catalog
+        bx, by = self.cfg["layout"]["base"]
+        aw, ad = self.cfg["layout"]["work_area"]
+        keep = keep_out or self.cfg["layout"]["build_area"]
+        reachable = reachable or (lambda x, y: 9.0 <= math.hypot(x - bx, y - by) <= 17.0)
+        from collections import Counter
+        with self.lock:
+            out_now = Counter((b.type, b.color) for b in self.blocks)
+        pool = []
+        for tid, t in cat.types.items():
+            if types and tid not in types:
+                continue
+            for c, k in t["colors"].items():
+                if colors and c not in colors:
+                    continue
+                pool += [(tid, c)] * max(0, int(k) - out_now[(tid, c)])
+        items = list(required)
+        for it in items:
+            if it in pool:
+                pool.remove(it)
+        rng.shuffle(pool)
+        items += pool[:max(0, n - len(items))]
+
+        def rect(x, y, yaw, w, d, grow=0.0):
+            return ((float(x), float(y)), (w + 2 * grow, d + 2 * grow), float(yaw))
+
+        def overlaps(r1, r2):
+            return cv2.rotatedRectangleIntersection(r1, r2)[0] != cv2.INTERSECT_NONE
+
+        placed = []
+        for tid, color in items:
+            w, d, _ = cat.size(tid)
+            for _ in range(tries):
+                yaw = float(rng.uniform(-90, 90))
+                loose = [b for b in self.blocks if not b.held and not self.cfg.in_build(b.x, b.y)]
+                if loose and rng.random() < near_frac:
+                    o = loose[rng.integers(len(loose))]
+                    a, r = rng.uniform(0, 2 * math.pi), rng.uniform(*near)
+                    x, y = o.x + r * math.cos(a), o.y + r * math.sin(a)
+                    gap = near[0]
+                else:
+                    x, y = rng.uniform(0, aw), rng.uniform(0, ad)
+                    gap = min_gap
+                me = rect(x, y, yaw, w, d)
+                pts = cv2.boxPoints(me)
+                if not all(1.0 <= px <= aw - 1.0 and 1.0 <= py <= ad - 1.0 for px, py in pts):
+                    continue
+                kx0, kx1, ky0, ky1 = keep
+                kr = (((kx0 + kx1) / 2, (ky0 + ky1) / 2), (kx1 - kx0 + 2 * margin, ky1 - ky0 + 2 * margin), 0.0)
+                if overlaps(me, kr) or not reachable(x, y):
+                    continue
+                with self.lock:
+                    others = list(self.blocks)
+                if any(math.hypot(o.x - x, o.y - y) < gap - 1e-6 or
+                       overlaps(rect(x, y, yaw, w, d, 0.1), rect(o.x, o.y, o.yaw, o.w, o.d, 0.1))
+                       for o in others):
+                    continue
+                placed.append(self.add_block(tid, color, x, y, yaw=yaw))
+                break
+        return placed
 
 
 def make_twin(cfg, catalog=None, speed=None, seed=None, camera_fps=20, reach_rate=0.0, view_fps=5):

@@ -125,6 +125,22 @@ def _claw_close(cfg, us):
     return us if cfg["claw_closed"] >= cfg["claw_open"] else -us
 
 
+def _flow(m, pose, sp):
+    """Send `pose` and sleep the firmware's travel time instead of waiting for the
+    "stopped" report, so keyframes without a dwell blend into one fluid motion.
+    The firmware moves every joint at most `sp` us per 20 ms tick, so the time is
+    exact for the commanded pose. A safety stop falls back to Motion._move."""
+    prev = m.arm.targets
+    m.arm.send_targets(pose)
+    left = max(abs(a - b) for a, b in zip(prev, pose)) / sp * 0.02
+    while left > 0:
+        if m.abort.is_set():
+            return m._move(pose)                     # waits out the stop, then lands the pose
+        m.clock.sleep(min(0.02, left))
+        left -= 0.02
+    return True
+
+
 def play(m, frames):
     """Like run(), but every keyframe can carry its own speed:
     frames = [({joint: offset_us}, dwell_s, speed_us or None), ...]; the final
@@ -146,8 +162,9 @@ def play(m, frames):
             if sp != cur:
                 m.arm.speed(sp)
                 cur = sp
-            if not m._move(_pose(cfg, start, {i: _cap(d, LOOK_TURN_MAX if i == BASE else EMO_MAX_US)
-                                              for i, d in offsets.items()})):
+            pose = _pose(cfg, start, {i: _cap(d, LOOK_TURN_MAX if i == BASE else EMO_MAX_US)
+                                      for i, d in offsets.items()})
+            if not (_flow(m, pose, sp) if dwell <= 0 else m._move(pose)):
                 return "abort"
             m.clock.sleep(dwell)
         ok = m._move(start)
@@ -180,7 +197,7 @@ def happy(m):
     half = {k: v // 3 for k, v in up.items()}
     seq = []
     for k in range(3):
-        seq += [(dict(up, **{ROLL: 50 if k % 2 else -50}), 0.0, FAST), (dict(half, **{CLAW: c}), 0.0, FAST)]
+        seq += [({**up, ROLL: 50 if k % 2 else -50}, 0.0, FAST), ({**half, CLAW: c}, 0.0, FAST)]
     return play(m, seq + [(up, 0.1, FAST), ({}, 0.0, QUICK)])
 
 
@@ -189,7 +206,7 @@ def sad(m):
     p = _dir(m.cfg, m.arm.targets, PITCH, 150)
     r = _dir(m.cfg, m.arm.targets, ROLL, 60)
     s = _dir(m.cfg, m.arm.targets, SHOULDER, -40)            # shoulders drop back, not down onto the table
-    return play(m, [({PITCH: p, ROLL: r, SHOULDER: s}, 0.6, SLOW),
+    return play(m, [({PITCH: p, ROLL: r, SHOULDER: s}, 0.45, SLOW),
                     ({PITCH: p * 4 // 5, ROLL: r, SHOULDER: s}, 0.0, CRAWL), ({}, 0.0, SLOW)])
 
 
@@ -210,8 +227,8 @@ def thinking(m, loops=1):
     for _ in range(max(1, int(loops))):
         for k in range(8):
             a = 2 * math.pi * k / 8
-            pts.append(({PITCH: lift + int(round(60 * math.sin(a))), ROLL: int(round(100 * math.cos(a)))}, 0.0, 6))
-    return play(m, pts + [({PITCH: lift, ROLL: 100}, 0.1, 6), ({}, 0.0, 8)])
+            pts.append(({PITCH: lift + int(round(60 * math.sin(a))), ROLL: int(round(100 * math.cos(a)))}, 0.0, 8))
+    return play(m, pts + [({PITCH: lift, ROLL: 100}, 0.05, 8), ({}, 0.0, 10)])
 
 
 def greet(m):
@@ -221,7 +238,7 @@ def greet(m):
           PITCH: _dir(m.cfg, m.arm.targets, PITCH, -150)}
     seq = [(up, 0.05, QUICK)]
     for k in range(4):
-        seq.append((dict(up, **{ROLL: 130 if k % 2 == 0 else -130}), 0.0, FAST))
+        seq.append(({**up, ROLL: 130 if k % 2 == 0 else -130}, 0.0, FAST))
     return play(m, seq + [(up, 0.1, FAST), ({}, 0.0, QUICK)])
 
 

@@ -82,6 +82,24 @@ class Builder:
             f.write(json.dumps(rec) + "\n")
         with self.lock:
             self.status["log"] = (self.status["log"] + [msg])[-40:]
+        self._react(msg)
+
+    def _react(self, msg):
+        """Show a feeling on the fly (confused when a block moved or a pick missed, happy
+        when done...). Only on the build's own thread, between moves, so it never fights
+        a move in progress; the emotion itself refuses while carrying a block."""
+        if not self.cfg.get("auto_emotions", True) or getattr(self, "_reacting", False):
+            return
+        if threading.current_thread() is not getattr(self, "_worker", None):
+            return
+        from .brain import reaction_for
+        emo = reaction_for(msg)
+        if emo:
+            self._reacting = True
+            try:
+                self._gesture(emo)
+            finally:
+                self._reacting = False
 
     def set_mode(self, mode, action=None):
         self.mode = mode
@@ -510,17 +528,31 @@ class Builder:
     def _find_supply(self, st, exclude=()):
         if not self.cfg["use_color"]:
             return self._at_pickup(st, exclude)
+        # pick_anywhere: on a cluttered table any loose block off the build strip
+        # will do; a supply zone only breaks ties. Otherwise supply zones only.
+        anywhere = self.cfg.get("pick_anywhere", True)
+        blocks = self.active_blocks()
+        loose = [o for o in blocks if o.get("zone") != "build"]
         best = None
-        for b in self.active_blocks():
+        for b in blocks:
             if b.get("type") != st["type"] or b["color"] != st["color"] or b["id"] in exclude:
                 continue
-            if b.get("zone") == "build" or not b.get("zone"):
+            if b.get("merged"):
+                continue                       # touching blocks the camera can't tell apart
+            if b.get("zone") == "build" or self.cfg.in_build(b["x"], b["y"], 1.0):
+                continue
+            if not b.get("zone") and not (anywhere and self.cfg.in_work_area(b["x"], b["y"])):
                 continue
             if not self._pick_reachable(b):
                 continue
             d = math.hypot(b["x"] - st["x"], b["y"] - st["y"])
-            if best is None or d < best[0]:
-                best = (d, b)
+            score = d + (0.0 if b.get("zone") else 2.0)
+            score += 8.0 * (1.0 - b.get("sure", 1.0))           # its type kept changing between frames
+            for o in loose:                    # crowded: the open claw may hit a neighbour
+                if o["id"] != b["id"]:
+                    score += 1.5 * max(0.0, 6.0 - math.hypot(o["x"] - b["x"], o["y"] - b["y"]))
+            if best is None or score < best[0]:
+                best = (score, b)
         return best[1] if best else None
 
     def _pick_reachable(self, b):
@@ -559,6 +591,10 @@ class Builder:
             name += f" ({pose})"
         msg = (f"Place a {st['color']} {name} in a supply zone" if self.cfg["use_color"]
                else f"Place a {name} on the pickup spot")
+        if self.cfg["use_color"] and any(b.get("merged") and b["color"] == st["color"]
+                                         for b in self.active_blocks()):
+            msg = (f"I need a {st['color']} {name}. Some {st['color']} blocks are touching and "
+                   f"I can't tell them apart: move them apart a little, or place one in a supply zone")
         with self.lock:
             self.status["prompt"] = msg
         self.set_mode("waiting", msg)
