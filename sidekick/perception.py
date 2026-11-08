@@ -73,6 +73,23 @@ def claw_tip(claw, marker_to_fingertip, forward=0.0, base=None, bias=None):
     return {"x": float(x), "y": float(y), "z": float(z), "down": nz}
 
 
+def tip_from_pixel(calib, cfg, u, v, h, base, tilt=0.0):
+    """Tips from the marker's pixel, given the tips' height h and the claw's outward
+    tilt (deg, from the arm model). Tipping the claw outward swings the marker,
+    which sits k cm up the claw from the tips, back toward the base by k*sin(tilt)."""
+    k, fwd = cfg["marker_to_fingertip"], cfg.get("marker_forward", 0.0)
+    t = math.radians(tilt)
+    hit = calib.pixel_to_table(u, v, z=h + k * math.cos(t) + fwd * math.sin(t))
+    if hit is None:
+        return None
+    x, y = hit
+    out = fwd * math.cos(t) - k * math.sin(t)       # marker sits this far out past the tips
+    r = math.hypot(x - base[0], y - base[1])
+    if out and r > 3.0:
+        x, y = x - out * (x - base[0]) / r, y - out * (y - base[1]) / r
+    return float(x), float(y)
+
+
 # ===================================================================== blocks (real images)
 def color_mask(hsv, ranges):
     mask = None
