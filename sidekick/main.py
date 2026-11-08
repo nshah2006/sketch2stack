@@ -612,10 +612,30 @@ def cmd_simtest(cfg, a):
     sys.exit(0 if simtest(cfg, runs=a.n or 3) else 1)
 
 
+def cmd_claw(cfg, a):
+    """Print where the camera thinks the fingertips are, twice a second (no arm moves)."""
+    from .body_model import read_claw
+    st = Stack(cfg, need_arm=False, hands=False)
+    print("Fingertip from the claw marker (cm). Touch the tips to the paper: z should read about 0. Ctrl+C quits.")
+    try:
+        while True:
+            m = read_claw(st.source, 5, marker_to_fingertip=cfg["marker_to_fingertip"],
+                          forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"])
+            if m is None:
+                print("  claw marker not seen", flush=True)
+            else:
+                print(f"  x {m['x']:6.1f}  y {m['y']:6.1f}  z {m['z']:5.1f}   down {m['down']:.2f}", flush=True)
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        st.close()
+
+
 COMMANDS = {
     "setup": cmd_setup, "markers": cmd_markers, "check": cmd_check, "jog": cmd_jog,
     "calib-lens": cmd_calib_lens, "calib-table": cmd_calib_table, "tune-colors": cmd_tune_colors,
-    "view": cmd_view, "babble": cmd_babble, "train-body": cmd_train_body, "reach": cmd_reach,
+    "view": cmd_view, "claw": cmd_claw, "babble": cmd_babble, "train-body": cmd_train_body, "reach": cmd_reach,
     "goto-test": cmd_goto_test, "pick-test": cmd_pick_test, "presets": cmd_presets, "build": cmd_build,
     "ui": cmd_ui, "selftest": cmd_selftest, "simtest": cmd_simtest,
 }

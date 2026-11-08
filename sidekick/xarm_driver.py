@@ -69,7 +69,10 @@ class XArm:
         """Actual joint positions in our microseconds (bus servos report them)."""
         out = []
         for sid in self.ids:
-            u = self._call(self.dev.getPosition, sid)
+            try:
+                u = self._call(self.dev.getPosition, sid)
+            except Exception:                    # USB hiccup (e.g. power pulled): unknown, not a crash
+                u = None
             out.append(to_us(u) if u is not None else None)
         self.report_time = self.clock.time()
         self.reports += 1
