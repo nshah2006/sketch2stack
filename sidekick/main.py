@@ -576,14 +576,18 @@ def cmd_goto_test(cfg, a):
                 r = b.motion.go_to(x, y, z, correct=not real)
                 if real:
                     time.sleep(0.4)
-                    m = _touch_tip(st.source, cfg, h=z, base=base)
-                    m = m and dict(m, z=z)
+                    tilt = 0.0
+                    if hasattr(st.body, "angles"):
+                        tilt = 180.0 - float(st.body.angles(st.arm.targets[:4])[3][0])
+                    m = _touch_tip(st.source, cfg, h=z, base=base, tilt=tilt)
+                    m = m and dict(m, z=z, tilt=tilt)
                 else:
                     m = b.read_claw()
                 e = None if m is None else float(np.linalg.norm([m["x"] - x, m["y"] - y, m["z"] - z]))
                 errs.append(e)
                 print(f"  ({x:.1f}, {y:.1f}) {r}  error {'unseen' if e is None else f'{e * 10:.1f} mm'}"
-                      + ("" if m is None else f"  (went to {m['x']:.1f}, {m['y']:.1f})"))
+                      + ("" if m is None else f"  (went to {m['x']:.1f}, {m['y']:.1f}"
+                         + (f", claw tipped {m['tilt']:.0f} deg)" if "tilt" in m else ")")))
                 b.motion.go_to(x, y, z + 3, correct=False)
         good = [e for e in errs if e is not None]
         if good:
@@ -813,19 +817,24 @@ def cmd_touch(cfg, a):
         st.close()
 
 
-def _tip_from_px(calib, cfg, u, v, h, base):
-    hit = calib.pixel_to_table(u, v, z=h + cfg["marker_to_fingertip"])
+def _tip_from_px(calib, cfg, u, v, h, base, tilt=0.0):
+    """Tips from the marker's pixel, given the tips' height h and the claw's outward
+    tilt (deg, from the arm model). Tipping the claw outward swings the marker,
+    which sits k cm up the claw from the tips, back toward the base by k*sin(tilt)."""
+    k, fwd = cfg["marker_to_fingertip"], cfg.get("marker_forward", 0.0)
+    t = math.radians(tilt)
+    hit = calib.pixel_to_table(u, v, z=h + k * math.cos(t) + fwd * math.sin(t))
     if hit is None:
         return None
     x, y = hit
-    fwd = cfg.get("marker_forward", 0.0)
+    out = fwd * math.cos(t) - k * math.sin(t)       # marker sits this far out past the tips
     r = math.hypot(x - base[0], y - base[1])
-    if fwd and r > 3.0:
-        x, y = x - fwd * (x - base[0]) / r, y - fwd * (y - base[1]) / r
+    if out and r > 3.0:
+        x, y = x - out * (x - base[0]) / r, y - out * (y - base[1]) / r
     return float(x), float(y)
 
 
-def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0, base=None):
+def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0, base=None, tilt=0.0):
     """Fingertip x, y for a touch point. With the claw pointing straight down the
     marker centre sits marker_to_fingertip above the tips, so its pixel ray is cut
     at that height (no marker-tilt estimate involved, which is good to ~1 cm only),
@@ -839,7 +848,7 @@ def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0, base=None):
     if len(px) < max(2, n // 2) or calib is None:
         return None
     u, v = np.median(np.array(px, float), axis=0)
-    hit = _tip_from_px(calib, cfg, u, v, h, base or cfg["layout"]["base"])
+    hit = _tip_from_px(calib, cfg, u, v, h, base or cfg["layout"]["base"], tilt)
     if hit is None:
         return None
     return {"x": hit[0], "y": hit[1], "px": [float(u), float(v)]}
