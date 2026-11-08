@@ -2,7 +2,7 @@
 
     python -m sidekick.main <command> [--sim | --real] [--speed N]
 
-Setup and checks   setup, markers, check, selftest, simtest, db-check
+Setup and checks   setup, markers, check, selftest, simtest, db-check, llm-check
 Arm                jog, babble, train-body, reach, goto-test, pick-test
 Camera             calib-lens, calib-table, tune-colors, view
 Building           presets, build <preset>, ui
@@ -627,6 +627,41 @@ def cmd_db_check(cfg, a):
     sys.exit(0)
 
 
+def cmd_llm_check(cfg, a):
+    """Which model actually answers, and does it understand the blocks?"""
+    import os
+    import time
+    from . import envfile
+    from .catalog import Catalog
+    from .dictation import llm_items
+
+    chain = envfile.llm_chain()
+    if not chain:
+        print("  no    no model configured. Put NVIDIA_API_KEY in .env (build.nvidia.com),")
+        print("        or OPENAI_API_KEY. Without either, the offline rule parser answers.")
+        sys.exit(1)
+    print("  order " + " then ".join(c[3] for c in chain) + "   (first one that answers wins)")
+    cat = Catalog.load()
+    bad = 0
+    for base, key, model, provider in chain:
+        print(f"\n  {provider}: {model}\n        {base}  key {key[:10]}... ({len(key)} chars)")
+        os.environ["LLM_PROVIDER"] = provider      # pin it so we test this one alone
+        t0 = time.time()
+        got = llm_items("a cube with a roof on top", cat)
+        dt = time.time() - t0
+        if got is None:
+            bad += 1
+            print(f"        FAIL  no usable answer after {dt:.1f}s (see the message above)")
+        else:
+            items = got[0]
+            what = ", ".join(f"{i['n']}x {i['tid']}" for i in items)
+            print(f"        ok    answered in {dt:.1f}s: {what}")
+    os.environ.pop("LLM_PROVIDER", None)
+    print("\n  every provider answered" if not bad else
+          f"\n  {bad} of {len(chain)} did not answer; the next one down the chain covers it")
+    sys.exit(1 if bad == len(chain) else 0)
+
+
 def cmd_selftest(cfg, a):
     from .selftest import run
     sys.exit(0 if run(cfg, quick=a.quick) else 1)
@@ -643,6 +678,7 @@ COMMANDS = {
     "view": cmd_view, "babble": cmd_babble, "train-body": cmd_train_body, "reach": cmd_reach,
     "goto-test": cmd_goto_test, "pick-test": cmd_pick_test, "presets": cmd_presets, "build": cmd_build,
     "ui": cmd_ui, "selftest": cmd_selftest, "simtest": cmd_simtest, "db-check": cmd_db_check,
+    "llm-check": cmd_llm_check,
 }
 
 

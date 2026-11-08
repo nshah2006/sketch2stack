@@ -56,7 +56,7 @@ function fullestColour(t: CatalogType, used: Record<string, number>) {
 }
 
 export function toBuild(placed: Placed[], types: Record<string, CatalogType>,
-                        _heights: Record<string, number>, unit: number,
+                        heights: Record<string, number>, unit: number,
                         stability = 0, problems: Problem[] = []): Build {
   return {
     id: 'editor',
@@ -65,16 +65,19 @@ export function toBuild(placed: Placed[], types: Record<string, CatalogType>,
     stability,
     source: 'sketch',
     problems,
-    blocks: placed.map((p): Block => {
+    blocks: placed.map((p, i): Block => {
       const t = types[p.type]
       const { w, d, h } = dims(t, p.pose, p.rot)
       return {
         id: p.id,
         x: p.x / unit,
-        // z_hint: where the user dropped it, so gravity is applied bottom-up in
-        // the order they built. Using the settled height here instead would send
-        // a brand-new block in at 0 and slide it under everything.
-        y: p.hint / unit,
+        // The height gravity settled this block to. It is both where the 3D view
+        // draws it and, as z_hint, the order the planner applies gravity in - and
+        // settled heights are already in bottom-to-top order, so one value serves
+        // both. A block dropped a moment ago has no settled height yet, so it
+        // falls back to the hint it was dropped at; using 0 there would slide a
+        // new block underneath everything already standing.
+        y: (heights[String(i)] ?? p.hint) / unit,
         z: (p.depth * 3.0) / unit,
         size: [w / unit, h / unit, d / unit],
         color: p.color as BlockColor,

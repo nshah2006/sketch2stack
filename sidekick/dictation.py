@@ -346,6 +346,28 @@ def _chat(url, key, body, drop_json_mode=False):
     return None
 
 
+def _try_chain(chain, body):
+    """Ask each provider in turn until one answers. Nemotron is first; OpenAI is
+    only reached if Nemotron has no key or the network ate it. -> reply text.
+    Raises the last error if every provider fails, so the caller falls back to
+    the rule parser the same way it always did."""
+    last = None
+    for base, key, model, provider in chain:
+        try:
+            out = _chat(base + "/chat/completions", key, {**body, "model": model},
+                        drop_json_mode=provider != "openai")
+            if out:
+                if provider != chain[0][3]:
+                    print(f"  {PROVIDER_NAMES.get(chain[0][3], chain[0][3])} did not answer; "
+                          f"used {PROVIDER_NAMES.get(provider, provider)}")
+                return out
+        except Exception as e:
+            last = e
+    if last:
+        raise last
+    return None
+
+
 def _json_obj(s):
     """Model text -> dict. Without a JSON mode some models wrap it in ``` fences or add
     chatter, so take the outermost braces; anything else raises and we fall back to the rules."""
@@ -358,11 +380,9 @@ def llm_items(text, catalog):
     """Free-form request -> (items, sup) via the configured LLM, or None (no key, offline, or garbage).
     Each block group says which group it sits on (`on`), so there are no connectors to misread.
     layout() and the planner check the result like any other."""
-    conf = envfile.llm_config()
-    if not conf:
+    chain = envfile.llm_chain()
+    if not chain:
         return None
-    base, key, model, provider = conf
-    who = PROVIDER_NAMES.get(provider, provider)
     types = {tid: {"name": t.get("name", tid), "size_cm": t["size"], "shape": t["shape"]}
              for tid, t in catalog.types.items()}      # no colors: stock is enforced here, not by the model
     system = (
@@ -388,11 +408,11 @@ def llm_items(text, catalog):
         'cube red (2, beside 1 right), roof (3, on [1,2]). '
         'Use only the ids above; no explanations. If the request has nothing to do with these blocks, '
         'return {"items":[]}.')
-    body = {"model": model, "temperature": 0,
+    body = {"model": chain[0][2], "temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}]}
     try:
-        data = _json_obj(_chat(base + "/chat/completions", key, body, drop_json_mode=provider != "openai"))
+        data = _json_obj(_try_chain(chain, body))
         raw = data["items"]
         ids = {int(i["id"]): k for k, i in enumerate(raw)}
         items = [{"tid": i["type"], "n": max(1, min(int(i.get("count") or 1), 20)),
@@ -410,7 +430,7 @@ def llm_items(text, catalog):
                 and int(b["of"]) in ids
             beside.append((ids[int(b["of"])], b["side"]) if ok else None)
     except Exception as e:                       # offline, bad key, bad JSON: fall back to the rules
-        print(f"dictation: {who} fallback failed ({type(e).__name__})", flush=True)
+        print(f"dictation: model fallback failed ({type(e).__name__}); using the rules", flush=True)
         return None
     if not items or any(i["tid"] not in catalog.types for i in items):
         return None
@@ -422,7 +442,7 @@ def llm_items(text, catalog):
         if re.search(r"\b" + re.escape(pr["name"].lower()) + r"s?\b", low):
             allowed |= {b["type"] for b in pr["blocks"]}
     if any(i["tid"] not in allowed for i in items):   # the model swapped in a block nobody asked for
-        print(f"dictation: {who} used a block type that wasn't requested; using the rules", flush=True)
+        print("dictation: the model used a block type that wasn't requested; using the rules", flush=True)
         return None
     for k in range(len(items)):                  # roofs hold nothing; a multi-support needs real stacks
         if multi[k]:
