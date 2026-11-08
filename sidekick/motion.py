@@ -134,10 +134,19 @@ class Motion:
         if self.cfg["force_sensors"]:
             ok = bool(self.arm.holding())
         else:
+            # A long block in the claw (roof, plank) sticks out past the blanked circle
+            # around the claw and still looks like "a block on the pick spot". Slide
+            # toward the build strip first: a held block comes along, a missed one stays.
+            x0, x1, y0, y1 = self.cfg["layout"]["build_area"]
+            vx, vy = (x0 + x1) / 2 - x, (y0 + y1) / 2 - y
+            n = math.hypot(vx, vy) or 1.0
+            moved = self.go_to(x + 4 * vx / n, y + 4 * vy / n, hover, claw=self.claw, roll=roll,
+                               correct=False) == "ok"
             self.clock.sleep(0.3)
             same = (lambda b: True) if not self.cfg["use_color"] else (
                 lambda b: b["color"] == blk["color"] and b.get("type") == blk.get("type"))
-            ok = not any(same(b) and math.hypot(b["x"] - x, b["y"] - y) < 2.5 for b in self.get_blocks())
+            near = 2.0 if moved else 2.5
+            ok = not any(same(b) and math.hypot(b["x"] - x, b["y"] - y) < near for b in self.get_blocks())
         if not ok:
             self.set_claw(open_)
             return "miss"

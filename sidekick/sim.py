@@ -398,6 +398,7 @@ class World:
         self.contacts = 0
         self._in_contact = False
         self.table_hits = 0
+        self.last_grasp = None
 
     # ---- wiring
     def serial_port(self):
@@ -470,6 +471,11 @@ class World:
             closed_now, open_now = frac >= 0.9, frac <= 0.5
             if closed_now and not self._closed_before:
                 g = self.grip_axis()
+                near = min(self.blocks, key=lambda q: math.hypot(q.x - fx, q.y - fy), default=None)
+                if near is not None:                  # why the last close did / didn't grab (tests, twin debugging)
+                    self.last_grasp = {"type": near.type, "dxy": round(math.hypot(near.x - fx, near.y - fy), 2),
+                                       "dz": round(fz - (near.z + near.h / 2), 2), "grip": round(g, 1),
+                                       "yaw": round(near.yaw, 1), "covered": self._covered(near)}
                 for b in self.blocks:
                     if b.held or self._covered(b):
                         continue
