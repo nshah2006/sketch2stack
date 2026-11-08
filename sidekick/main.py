@@ -12,6 +12,7 @@ $SIDEKICK_DATA), so any step can be redone on its own.
 """
 import argparse
 import json
+import math
 import sys
 import time
 
@@ -693,9 +694,8 @@ def cmd_touch(cfg, a):
                     arm._send("J " + " ".join(str(x) for x in t))
                     arm.targets = t
                 elif c == "save":
-                    m = read_claw(st.source, 15, timeout=4.0, marker_to_fingertip=cfg["marker_to_fingertip"],
-                                  forward=cfg.get("marker_forward", 0.0), base=cfg["layout"]["base"],
-                                  bias=cfg.get("claw_normal_bias"))
+                    h = float(parts[1]) if len(parts) > 1 else 0.0     # `save 2.5` = tips on a 2.5 cm block
+                    m = _touch_tip(st.source, cfg, h)
                     if m is None:
                         print("  claw marker not seen; not saved (keep hands out of view)")
                         continue
@@ -704,8 +704,8 @@ def cmd_touch(cfg, a):
                     if pulses is None:
                         pulses = list(arm.targets[:4])
                     with open(out, "a") as f:
-                        f.write(_json.dumps({"p": pulses, "x": m["x"], "y": m["y"], "z": m["z"]}) + "\n")
-                    print(f"  saved point at x {m['x']:.1f}  y {m['y']:.1f}  (camera z {m['z']:.1f})")
+                        f.write(_json.dumps(dict(m, p=pulses, h=h)) + "\n")
+                    print(f"  saved point at x {m['x']:.1f}  y {m['y']:.1f}  (tips at height {h:g} cm)")
                 elif c == "zero":
                     raw = read_claw(st.source, 30, timeout=6.0, raw=True)
                     if raw is None:
@@ -737,19 +737,69 @@ def cmd_touch(cfg, a):
         st.close()
 
 
+def _tip_from_px(calib, cfg, u, v, h, base):
+    hit = calib.pixel_to_table(u, v, z=h + cfg["marker_to_fingertip"])
+    if hit is None:
+        return None
+    x, y = hit
+    fwd = cfg.get("marker_forward", 0.0)
+    r = math.hypot(x - base[0], y - base[1])
+    if fwd and r > 3.0:
+        x, y = x - fwd * (x - base[0]) / r, y - fwd * (y - base[1]) / r
+    return float(x), float(y)
+
+
+def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0):
+    """Fingertip x, y for a touch point. With the claw pointing straight down the
+    marker centre sits marker_to_fingertip above the tips, so its pixel ray is cut
+    at that height (no marker-tilt estimate involved, which is good to ~1 cm only),
+    then marker_forward is taken off toward the base."""
+    px, t_end = [], time.monotonic() + timeout
+    while len(px) < n and time.monotonic() < t_end:
+        obs = source.read(timeout=0.5)
+        if obs is not None and obs.claw_px is not None:
+            px.append(obs.claw_px)
+    calib = getattr(source, "calib", None)
+    if len(px) < max(2, n // 2) or calib is None:
+        return None
+    u, v = np.median(np.array(px, float), axis=0)
+    hit = _tip_from_px(calib, cfg, u, v, h, cfg["layout"]["base"])
+    if hit is None:
+        return None
+    return {"x": hit[0], "y": hit[1], "px": [float(u), float(v)]}
+
+
 def _fit_arm(cfg):
     from .kinematics import default_params, fit, load_points
     pts = load_points()
     if len(pts) < 4:
         print(f"  need at least 4 touch points (have {len(pts)})")
         return None
-    body, rms, worst = fit(default_params(cfg, _lengths(cfg)), pts, cfg["joint_min"], cfg["joint_max"])
+    params = default_params(cfg, _lengths(cfg))
+    calib = None
+    if any("px" in q for q in pts):
+        from .calibration import Calibration
+        calib = Calibration.load()
+    for _ in range(3 if calib else 1):
+        if calib:      # the marker offset points away from the base: redo the tips with the fitted base
+            for q in pts:
+                if "px" in q:
+                    hit = _tip_from_px(calib, cfg, q["px"][0], q["px"][1], q.get("h", 0.0),
+                                       (params["bx"], params["by"]))
+                    if hit:
+                        q["x"], q["y"] = hit
+        body, rms, worst, each = fit(params, pts, cfg["joint_min"], cfg["joint_max"])
+        params = dict(params, bx=body.p["bx"], by=body.p["by"])
     body.save()
     p = body.p
+    for i, (q, d) in enumerate(zip(pts, each)):
+        flag = "   <-- off, check this one" if d > max(0.8, 2.5 * rms) else ""
+        print(f"    point {i + 1}: J {' '.join(str(v) for v in q['p'])}  error {d * 10:.0f} mm{flag}")
     print(f"  fitted {len(pts)} points: average error {rms * 10:.1f} mm, worst {worst * 10:.1f} mm "
           f"(good: under 5 mm). Saved {C.path('kinematic')}")
     print(f"  offsets J0..J3 = {p['o0']:.0f} {p['o1']:.0f} {p['o2']:.0f} {p['o3']:.0f}, shoulder height "
-          f"{p['A']:.1f} cm, base at ({p['bx']:.1f}, {p['by']:.1f}), turntable direction {p['s0']:+.0f}")
+          f"{p['A']:.1f} cm, base at ({p['bx']:.1f}, {p['by']:.1f}), turntable direction {p['s0']:+.0f}, "
+          f"{p['k']:.2f} us/deg")
     return body
 
 
@@ -759,6 +809,7 @@ def cmd_fit_arm(cfg, a):
 
 __doc_touch__ = """Touch points: jog the claw STRAIGHT DOWN until the tips just touch the paper, then type save.
   <joint> <us> / <joint> +<us>   move (same as jog)      save    store this point
+  save 2.5   store a point with the tips resting on top of something 2.5 cm tall
   zero   (first point only) claw straight down, tips touching: re-zero the camera's claw reading
   undo   remove the last point     clear   remove all     fit   fit the arm model     q   quit
 Do 6-10 points spread over where the arm will build: left, right, near, far."""
