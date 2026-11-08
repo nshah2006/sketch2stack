@@ -472,43 +472,119 @@ def cmd_train_body(cfg, a):
 
 
 def cmd_reach(cfg, a):
-    from .body_model import BodyModel
-    body = BodyModel.load(C.body_path(cfg))
+    """Map of where the arm can grip a 3 cm block (on the table and 2 blocks up).
+    --apply moves the build strip, supply zones and pickup spot onto the reachable area."""
+    body = load_body(cfg)
     lay = cfg["layout"]
-    print("Reachable fingertip positions (# = yes) at the grasp height of a 3 cm block on the table,\n"
-          "and 4 cm higher. Columns x = 0..50, rows y from back (top) to front. B = build strip, S = supply.")
-    for z in (cfg.grasp_z(0, 3.0), cfg.grasp_z(0, 3.0) + 4):
-        print(f"\nfingertip z = {z:.1f} cm")
-        for y in range(int(lay["work_area"][1]), -1, -2):
-            row = ""
-            for x in range(0, int(lay["work_area"][0]) + 1, 2):
-                ok = body.solve([x, y, z], steps=80)["reachable"]
-                ch = "#" if ok else "."
-                if cfg.in_build(x, y):
-                    ch = "B" if ok else "b"
-                elif cfg.in_supply(x, y):
-                    ch = "S" if ok else "s"
-                row += ch
-            print(f"{y:3d} {row}", flush=True)
-    print("\nLowercase b/s = a build or supply spot the arm can't reach. Move layout.build_area / "
-          "layout.supply in config.json onto the # area.")
+    W, H = lay["work_area"]
+    zs = (cfg.grasp_z(0, 3.0), cfg.grasp_z(6.0, 3.0))
+    ok, tilt = {}, {}
+    for y in range(int(H), -1, -1):
+        for x in range(0, int(W) + 1):
+            sols = [body.solve([x, y, z], steps=80) for z in zs]
+            ok[x, y] = all(s["reachable"] for s in sols)
+            tilt[x, y] = max(math.degrees(math.acos(min(1.0, max(-1.0, s["down"])))) for s in sols)
+    if a.apply:
+        _apply_layout(cfg, ok, tilt, W, H)
+    print(f"Where the arm can grip a 3 cm block on the table AND 2 blocks up (# = yes), x 0..{W:g} "
+          "left to right, y from the back (top) to the front. B = build strip, S = supply, P = pickup.")
+    px, py = lay.get("pickup", [-99, -99])
+    for y in range(int(H), -1, -1):
+        row = ""
+        for x in range(0, int(W) + 1):
+            c = "#" if ok[x, y] else "."
+            if abs(x - px) < 1 and abs(y - py) < 1:
+                c = "P" if ok[x, y] else "p"
+            elif cfg.in_build(x, y):
+                c = "B" if ok[x, y] else "b"
+            elif cfg.in_supply(x, y):
+                c = "S" if ok[x, y] else "s"
+            row += c
+        print(f"{y:3d} {row}")
+    print("Lowercase b/s/p = a build, supply or pickup spot the arm can't reach. "
+          "`python -m sidekick reach --apply` moves them onto the # area.")
+
+
+def _apply_layout(cfg, ok, tilt, W, H):
+    """Build strip (as wide as possible, claw as upright as possible) plus a 4x4 cm
+    supply zone on each side, all on reachable spots."""
+    lay = cfg["layout"]
+
+    def cost(x0, x1, y0, y1):          # worst claw tilt over the rectangle, None if unreachable
+        cells = [(x, y) for x in range(int(x0), int(x1) + 1) for y in range(int(y0), int(y1) + 1)]
+        if not all(ok.get(c, False) for c in cells):
+            return None
+        return max(tilt[c] for c in cells)
+
+    bx, by = lay["base"]
+    best = None
+    for limit in (40, 45, 90):              # widest strip with the claw tipped at most `limit` deg,
+        for w in (16, 14, 12, 10, 8):       # right in front of the base
+            for y0 in range(0, int(H) - 2):
+                for x0 in range(0, int(W) - w + 1):
+                    c = cost(x0, x0 + w, y0, y0 + 3)
+                    if c is not None and c <= limit:
+                        # centred in front of the base, ~12 cm out (where the touch points were)
+                        score = (abs(x0 + w / 2 - bx) + abs(by - (y0 + 1.5) - 12), c)
+                        if best is None or score < best[2]:
+                            best = (c, [x0, x0 + w, y0, y0 + 3], score)
+            if best:
+                break
+        if best:
+            break
+    if best is None:
+        print("  no reachable spot for a build strip; check the touch fit / joint limits")
+        return
+    b = best[1]
+    lay["build_area"] = [float(v) for v in b]
+    sides = {}
+    for name in ("left", "right"):
+        cand = None
+        for y in range(2, int(H) - 1):
+            for x in range(2, int(W) - 1):
+                if (name == "left" and x + 2 > b[0] - 3) or (name == "right" and x - 2 < b[1] + 3):
+                    continue
+                c = cost(x - 2, x + 2, y - 2, y + 2)
+                if c is not None and (cand is None or c < cand[0]):
+                    cand = (c, [float(x - 2), float(x + 2), float(y - 2), float(y + 2)])
+        if cand:
+            sides[name] = cand[1]
+    if sides:
+        lay["supply"] = sides
+        z = sides.get("left") or sides["right"]
+        lay["pickup"] = [(z[0] + z[1]) / 2, (z[2] + z[3]) / 2]
+    C.save(cfg)
+    print(f"  build strip -> {lay['build_area']} (claw tilt up to {best[0]:.0f} deg), "
+          f"supply -> {lay['supply']}, pickup -> {lay['pickup']} (saved)\n")
 
 
 def cmd_goto_test(cfg, a):
+    """Send the tips to 9 spots just above the paper (claw down) and measure where they
+    went with the camera. Real arm: uses the marker's pixel, like `touch`."""
     from .builder import Builder
     st = Stack(cfg, need_arm=True, need_body=True, speed=a.speed)
     b = Builder(cfg, st.catalog, st.source, st.arm, st.body)
+    real = not cfg["use_sim"]
     try:
         x0, x1, y0, y1 = cfg["layout"]["build_area"]
-        z = cfg.grasp_z(0, 3.0) + 2
+        z = 1.0 if real else cfg.grasp_z(0, 3.0) + 2
+        base = (st.body.p["bx"], st.body.p["by"]) if hasattr(st.body, "p") else None
         errs = []
-        for x in np.linspace(x0 + 1, x1 - 1, 3):
+        for x in np.linspace(x0, x1, 3):
             for y in np.linspace(y0, y1, 3):
-                r = b.motion.go_to(x, y, z, correct=True)
-                m = b.read_claw()
+                b.motion.go_to(x, y, z + 3, correct=False)            # come in from above
+                r = b.motion.go_to(x, y, z, correct=not real)
+                if real:
+                    time.sleep(0.4)
+                    m = _touch_tip(st.source, cfg, h=z, base=base)
+                    m = m and dict(m, z=z)
+                else:
+                    m = b.read_claw()
                 e = None if m is None else float(np.linalg.norm([m["x"] - x, m["y"] - y, m["z"] - z]))
                 errs.append(e)
-                print(f"  ({x:.1f}, {y:.1f}, {z:.1f}) {r}  error {'unseen' if e is None else f'{e * 10:.1f} mm'}")
+                print(f"  ({x:.1f}, {y:.1f}) {r}  error {'unseen' if e is None else f'{e * 10:.1f} mm'}"
+                      + ("" if m is None else f"  (went to {m['x']:.1f}, {m['y']:.1f})"))
+                b.motion.go_to(x, y, z + 3, correct=False)
         good = [e for e in errs if e is not None]
         if good:
             print(f"mean {np.mean(good) * 10:.1f} mm, worst {np.max(good) * 10:.1f} mm (target under 5 mm)")
@@ -749,7 +825,7 @@ def _tip_from_px(calib, cfg, u, v, h, base):
     return float(x), float(y)
 
 
-def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0):
+def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0, base=None):
     """Fingertip x, y for a touch point. With the claw pointing straight down the
     marker centre sits marker_to_fingertip above the tips, so its pixel ray is cut
     at that height (no marker-tilt estimate involved, which is good to ~1 cm only),
@@ -763,7 +839,7 @@ def _touch_tip(source, cfg, h=0.0, n=15, timeout=4.0):
     if len(px) < max(2, n // 2) or calib is None:
         return None
     u, v = np.median(np.array(px, float), axis=0)
-    hit = _tip_from_px(calib, cfg, u, v, h, cfg["layout"]["base"])
+    hit = _tip_from_px(calib, cfg, u, v, h, base or cfg["layout"]["base"])
     if hit is None:
         return None
     return {"x": hit[0], "y": hit[1], "px": [float(u), float(v)]}
@@ -792,6 +868,8 @@ def _fit_arm(cfg):
         params = dict(params, bx=body.p["bx"], by=body.p["by"])
     body.save()
     p = body.p
+    cfg["layout"]["base"] = [round(p["bx"], 1), round(p["by"], 1)]
+    C.save(cfg)
     for i, (q, d) in enumerate(zip(pts, each)):
         flag = "   <-- off, check this one" if d > max(0.8, 2.5 * rms) else ""
         print(f"    point {i + 1}: J {' '.join(str(v) for v in q['p'])}  error {d * 10:.0f} mm{flag}")
@@ -840,6 +918,7 @@ def main(argv=None):
     ap.add_argument("--height", type=float, default=None,
                     help="calib-table: measured camera height in cm; sets the lens from it")
     ap.add_argument("--zero", action="store_true", help="claw: learn the claw marker's tilt bias (tips on the paper)")
+    ap.add_argument("--apply", action="store_true", help="reach: move the build/supply zones onto the reachable area")
     ap.add_argument("--quick", action="store_true", help="selftest: skip the slow simulator build")
     a = ap.parse_args(argv)
     over = {}

@@ -22,6 +22,7 @@ import numpy as np
 from . import config as C
 
 US_PER_DEG = 8.333
+MAX_TILT = 45       # deg, claw tipped outward when vertical is out of reach
 FIT_KEYS = ["o0", "o1", "o2", "o3", "bx", "by", "k"]
 # how much the fit trusts each thing (one "unit" of residual each):
 SIG_XY = 0.4        # cm, camera position of a touch point
@@ -83,10 +84,12 @@ class KinematicBody:
     # ---- inverse
     def solve(self, target, **_):
         """Pulses for J0-J3 that put the fingertips at target (x, y, z), claw pointing
-        straight down if the wrist allows, else tilted up to 25 degrees.
+        straight down if the wrist allows, else tipped outward (away from the base) up
+        to MAX_TILT degrees: on the xArm the wrist runs out of travel when the tips go
+        up with the claw vertical, and tipping outward gives it back.
         -> {"pulses", "pred", "error", "down", "reachable"}"""
         best = None
-        for tilt in (0, 5, 10, 15, 20, 25, -5, -10, -15, -20, -25):
+        for tilt in list(range(0, MAX_TILT + 1, 5)) + [-5, -10, -15, -20, -25]:
             out = self._solve_at(target, 180.0 - tilt)
             if out["reachable"]:
                 return out
