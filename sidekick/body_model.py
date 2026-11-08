@@ -102,6 +102,8 @@ def babble(arm, source, cfg, n=None, out_path=None, progress=None, stop=None, rn
                 continue
             unseen = 0
             last_z = m["z"]
+            if rng_us and m["down"] < 0.6:            # claw tipping over: treat like too low, go back to ready
+                last_z = -1.0
             line = {"p": [int(round(c)) for c in cur[:4]], "x": m["x"], "y": m["y"], "z": m["z"],
                     "down": m["down"], "t": clock.time()}
             f.write(json.dumps(line) + "\n")
