@@ -96,8 +96,16 @@ export const api = {
     call<{ request_id: number; builds: Build[] }>(
       '/api/generate', { strokes, prompt, request_id: requestId, fit, color: color ?? null },
       { signal, timeout: 60000 }),
+  /** `negotiation` is one line per round of the repair loop: what the planner
+   *  refused and what the model did about it. Empty when nothing needed fixing. */
   dictate: (text: string, build: Build | null, requestId: number, signal?: AbortSignal) =>
-    call<{ request_id: number; reply: string; builds: Build[] }>('/api/dictate', { text, build, request_id: requestId }, { signal, timeout: 30000 }),
+    call<{
+      request_id: number
+      reply: string
+      builds: Build[]
+      negotiation?: { step: string; problem: string; outcome: string }[]
+      used_llm?: boolean
+    }>('/api/dictate', { text, build, request_id: requestId }, { signal, timeout: 30000 }),
   /** Validate a build: problems, score, and the height gravity settles each block to
    *  (`z` is keyed by block index, in cm). */
   check: (build: Build) =>

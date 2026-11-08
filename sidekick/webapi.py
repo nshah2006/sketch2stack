@@ -382,8 +382,10 @@ def dictate(text, build, cfg, catalog, body=None):
     _, probs = planner.plan(d, cfg, catalog, body)
     why = next((p["msg"] for p in probs if p["level"] == "error"), "it doesn't fit")
     reply = res["reply"]
+    trace = negotiation(fixed["tried"])
     if not kept["blocks"]:
-        return {"reply": f"That can't be built: {why}", "builds": []}
+        return {"reply": f"That can't be built: {why}", "builds": [],
+                "negotiation": trace, "used_llm": fixed["used_llm"]}
     if len(kept["blocks"]) < len(d["blocks"]):
         names = {}
         for b in kept["blocks"]:
@@ -393,8 +395,9 @@ def dictate(text, build, cfg, catalog, body=None):
         reply = (f"That doesn't fully fit ({why}). I kept {have} and dropped "
                  f"{len(d['blocks']) - len(kept['blocks'])}.")
     bid = f"voice-{abs(hash(str(kept['blocks']))) % 10**6}"
-    return {"reply": reply, "builds": [design_to_build(kept, cfg, catalog, bid, "From your request",
-                                                       text.strip()[:80], "sketch", body)]}
+    return {"reply": reply, "negotiation": trace, "used_llm": fixed["used_llm"],
+            "builds": [design_to_build(kept, cfg, catalog, bid, "From your request",
+                                       text.strip()[:80], "sketch", body)]}
 
 
 # ================================================================ live revision
@@ -403,6 +406,26 @@ def _same_step(a, b):
     return (a["type"] == b["type"] and int(a.get("pose", 0)) == int(b.get("pose", 0))
             and abs(a["x"] - b["x"]) < 0.2 and abs(a["y"] - b["y"]) < 0.2
             and abs(a["z"] - b["z"]) < 0.2)
+
+
+def negotiation(tried):
+    """repair()'s rounds as lines a person can read. The point is to make the
+    model's reasoning visible: what the planner refused, what was proposed, and
+    whether it stuck -- rather than a design silently appearing."""
+    out = []
+    for r in tried or []:
+        rnd = r.get("round")
+        probs = r.get("problems") or []
+        if r.get("ok") and rnd:
+            outcome = "accepted"
+        elif r.get("ok"):
+            outcome = r.get("note") or "dropped blocks from the top"
+        else:
+            outcome = r.get("note") or "no fix offered"
+        out.append({"step": f"round {rnd}" if rnd else "fallback",
+                    "problem": probs[0] if probs else "(no detail)",
+                    "outcome": outcome})
+    return out
 
 
 def revise_build(text, build, fixed, old_steps, cfg, catalog, body=None):

@@ -145,7 +145,14 @@ export function Workspace() {
         persist({ prompt: text, builds: res.builds, buildIds: res.builds.map((b) => b.id), selectedBuild: 0, status: 'generated' })
         setStage('choose')
       }
-      return res.reply
+      // Show the negotiation, not just the verdict: if the planner refused the
+      // first idea, the rounds it took to find one that stands are the most
+      // interesting thing the system does.
+      const rounds = res.negotiation ?? []
+      if (!rounds.length) return res.reply
+      const how = rounds.map((t) => `  ${t.step}: ${t.problem} -> ${t.outcome}`).join('\n')
+      const who = res.used_llm ? 'the model' : 'the offline rules'
+      return `${res.reply}\n\nHow ${who} got there:\n${how}`
     } catch (e) {
       return (e as Error).message
     }
